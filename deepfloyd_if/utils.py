@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 from os.path import abspath, dirname, join
 
-import torch
+import mindspore as ms
+from mindspore import ops
 import numpy as np
 from PIL import Image, ImageFilter
 
@@ -57,7 +58,7 @@ def pil_list_to_torch_tensors(pil_images):
     result = []
     for pil_image in pil_images:
         image = np.array(pil_image, dtype=np.uint8)
-        image = torch.from_numpy(image)
+        image = ms.Tensor(image)
         image = image.permute(2, 0, 1).unsqueeze(0)
         result.append(image)
-    return torch.cat(result, dim=0)
+    return ops.cat(result, axis=0)

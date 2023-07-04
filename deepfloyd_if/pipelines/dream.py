@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from datetime import datetime
 
-import torch
+from mindspore import ops
 
 
 def dream(
@@ -126,7 +126,7 @@ def dream(
             _stageIII_generations, _meta = if_III.embeddings_to_image(**if_III_kwargs)
             stageIII_generations.append(_stageIII_generations)
 
-        stageIII_generations = torch.cat(stageIII_generations, 0)
+        stageIII_generations = ops.cat(stageIII_generations, 0)
         pil_images_III = if_III.to_images(stageIII_generations, disable_watermark=disable_watermark)
 
         result['III'] = pil_images_III

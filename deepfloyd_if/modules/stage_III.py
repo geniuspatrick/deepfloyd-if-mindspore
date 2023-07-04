@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-import accelerate
 
 from .base import IFBaseModule
 from ..model import SuperResUNetModel
@@ -13,10 +12,10 @@ class IFStageIII(IFBaseModule):
         super().__init__(*args, pil_img_size=pil_img_size, **kwargs)
         model_params = dict(self.conf.params)
         model_params.update(model_kwargs or {})
-        with accelerate.init_empty_weights():
-            self.model = SuperResUNetModel(low_res_diffusion=self.get_diffusion('1000'), **model_params)
+        # with accelerate.init_empty_weights():
+        self.model = SuperResUNetModel(low_res_diffusion=self.get_diffusion('1000'), **model_params)
         self.model = self.load_checkpoint(self.model, self.dir_or_name)
-        self.model.eval().to(self.device)
+        self.model.eval()
 
     def embeddings_to_image(
             self, low_res, t5_embs, style_t5_embs=None, positive_t5_embs=None, negative_t5_embs=None, batch_repeat=1,

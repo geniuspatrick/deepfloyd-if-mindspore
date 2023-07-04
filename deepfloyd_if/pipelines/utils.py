@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-import torch
+import mindspore as ms
 import numpy as np
 from PIL import Image
 
@@ -21,5 +21,5 @@ def _prepare_pil_image(raw_pil_img, img_size):
     img = np.array(pil_img)
     img = img.astype(np.float32) / 127.5 - 1
     img = np.transpose(img, [2, 0, 1])
-    img = torch.from_numpy(img).unsqueeze(0)
+    img = ms.Tensor(img).unsqueeze(0)
     return img

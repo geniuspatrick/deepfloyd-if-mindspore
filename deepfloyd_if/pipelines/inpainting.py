@@ -2,7 +2,8 @@
 from datetime import datetime
 
 import PIL
-import torch
+import mindspore as ms
+from mindspore import ops
 
 from .utils import _prepare_pil_image
 
@@ -59,7 +60,7 @@ def inpainting(
     if_I_kwargs['support_noise'] = low_res
 
     inpainting_mask_I = img_as_bool(resize(inpainting_mask[0].cpu(), (3, image_h, image_w)))
-    inpainting_mask_I = torch.from_numpy(inpainting_mask_I).unsqueeze(0).to(if_I.device)
+    inpainting_mask_I = ms.Tensor(inpainting_mask_I).unsqueeze(0).to(if_I.device)
 
     if_I_kwargs['inpainting_mask'] = inpainting_mask_I
 
@@ -82,7 +83,7 @@ def inpainting(
 
         if 'inpainting_mask' not in if_II_kwargs:
             inpainting_mask_II = img_as_bool(resize(inpainting_mask[0].cpu(), (3, image_h, image_w)))
-            inpainting_mask_II = torch.from_numpy(inpainting_mask_II).unsqueeze(0).to(if_II.device)
+            inpainting_mask_II = ms.Tensor(inpainting_mask_II).unsqueeze(0).to(if_II.device)
             if_II_kwargs['inpainting_mask'] = inpainting_mask_II
 
         stageII_generations, _meta = if_II.embeddings_to_image(**if_II_kwargs)
@@ -111,13 +112,13 @@ def inpainting(
 
             if 'inpainting_mask' not in if_III_kwargs:
                 inpainting_mask_III = img_as_bool(resize(inpainting_mask[0].cpu(), (3, image_h, image_w)))
-                inpainting_mask_III = torch.from_numpy(inpainting_mask_III).unsqueeze(0).to(if_III.device)
+                inpainting_mask_III = ms.Tensor(inpainting_mask_III).unsqueeze(0).to(if_III.device)
                 if_III_kwargs['inpainting_mask'] = inpainting_mask_III
 
             _stageIII_generations, _meta = if_III.embeddings_to_image(**if_III_kwargs)
             stageIII_generations.append(_stageIII_generations)
 
-        stageIII_generations = torch.cat(stageIII_generations, 0)
+        stageIII_generations = ops.cat(stageIII_generations, 0)
         pil_images_III = if_III.to_images(stageIII_generations, disable_watermark=disable_watermark)
 
         result['III'] = pil_images_III

@@ -1,7 +1,6 @@
 tqdm
 numpy
-torch<2.0.0
-torchvision
+mindspore>=2.0
 omegaconf
 matplotlib
 Pillow>=9.2.0

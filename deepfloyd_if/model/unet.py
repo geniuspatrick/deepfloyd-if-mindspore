@@ -3,10 +3,9 @@ import os
 import math
 from abc import abstractmethod
 
-import torch
 import numpy as np
-import torch.nn as nn
-import torch.nn.functional as F
+import mindspore as ms
+from mindspore import nn, ops
 
 from .nn import avg_pool_nd, conv_nd, linear, normalization, timestep_embedding, zero_module, get_activation, \
     AttentionPooling
@@ -17,26 +16,26 @@ if _FORCE_MEM_EFFICIENT_ATTN:
     from xformers.ops import memory_efficient_attention  # noqa
 
 
-class TimestepBlock(nn.Module):
+class TimestepBlock(nn.Cell):
     """
     Any module where forward() takes timestep embeddings as a second argument.
     """
 
     @abstractmethod
-    def forward(self, x, emb):
+    def construct(self, x, emb):
         """
         Apply the module to `x` given `emb` timestep embeddings.
         """
 
 
-class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
+class TimestepEmbedSequential(nn.SequentialCell, TimestepBlock):
     """
     A sequential module that passes timestep embeddings to the children that
     support it as an extra input.
     """
 
-    def forward(self, x, emb, encoder_out=None):
-        for layer in self:
+    def construct(self, x, emb, encoder_out=None):
+        for layer in self.cell_list:
             if isinstance(layer, TimestepBlock):
                 x = layer(x, emb)
             elif isinstance(layer, AttentionBlock):
@@ -46,7 +45,7 @@ class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
         return x
 
 
-class Upsample(nn.Module):
+class Upsample(nn.Cell):
     """
     An upsampling layer with an optional convolution.
     :param channels: channels in the inputs and outputs.
@@ -65,22 +64,22 @@ class Upsample(nn.Module):
         if use_conv:
             self.conv = conv_nd(dims, self.channels, self.out_channels, 3, padding=1, dtype=self.dtype)
 
-    def forward(self, x):
+    def construct(self, x):
         assert x.shape[1] == self.channels
         if self.dims == 3:
-            x = F.interpolate(x, (x.shape[2], x.shape[3] * 2, x.shape[4] * 2), mode='nearest')
+            x = ops.interpolate(x, (x.shape[2], x.shape[3] * 2, x.shape[4] * 2), mode='nearest')
         else:
-            if self.dtype == torch.bfloat16:
-                x = x.type(torch.float32 if x.device.type == 'cpu' else torch.float16)
-            x = F.interpolate(x, scale_factor=2, mode='nearest')
-            if self.dtype == torch.bfloat16:
-                x = x.type(torch.bfloat16)
+            if self.dtype == ms.float16:  # torch.bfloat16
+                x = x.type(ms.float32 if x.device.type == 'cpu' else ms.float16)
+            x = ops.interpolate(x, scale_factor=2, mode='nearest')
+            if self.dtype == ms.float16:  # torch.bfloat16
+                x = x.type(ms.float16)  # torch.bfloat16
         if self.use_conv:
             x = self.conv(x)
         return x
 
 
-class Downsample(nn.Module):
+class Downsample(nn.Cell):
     """
     A downsampling layer with an optional convolution.
     :param channels: channels in the inputs and outputs.
@@ -103,7 +102,7 @@ class Downsample(nn.Module):
             assert self.channels == self.out_channels
             self.op = avg_pool_nd(dims, kernel_size=stride, stride=stride)
 
-    def forward(self, x):
+    def construct(self, x):
         assert x.shape[1] == self.channels
         return self.op(x)
 
@@ -150,11 +149,11 @@ class ResBlock(TimestepBlock):
         self.efficient_activation = efficient_activation
         self.scale_skip_connection = scale_skip_connection
 
-        self.in_layers = nn.Sequential(
+        self.in_layers = nn.SequentialCell([
             normalization(channels, dtype=self.dtype),
             get_activation(activation),
             conv_nd(dims, channels, self.out_channels, 3, padding=1, dtype=self.dtype),
-        )
+        ])
 
         self.updown = up or down
 
@@ -167,20 +166,20 @@ class ResBlock(TimestepBlock):
         else:
             self.h_upd = self.x_upd = nn.Identity()
 
-        self.emb_layers = nn.Sequential(
+        self.emb_layers = nn.SequentialCell([
             nn.Identity() if self.efficient_activation else get_activation(activation),
             linear(
                 emb_channels,
                 2 * self.out_channels if use_scale_shift_norm else self.out_channels,
                 dtype=self.dtype
             ),
-        )
-        self.out_layers = nn.Sequential(
+        ])
+        self.out_layers = nn.SequentialCell([
             normalization(self.out_channels, dtype=self.dtype),
             get_activation(activation),
             nn.Dropout(p=dropout),
             zero_module(conv_nd(dims, self.out_channels, self.out_channels, 3, padding=1, dtype=self.dtype)),
-        )
+        ])
 
         if self.out_channels == channels:
             self.skip_connection = nn.Identity()
@@ -189,7 +188,7 @@ class ResBlock(TimestepBlock):
         else:
             self.skip_connection = conv_nd(dims, channels, self.out_channels, 1, dtype=self.dtype)
 
-    def forward(self, x, emb):
+    def construct(self, x, emb):
         """
         Apply the block to a Tensor, conditioned on a timestep embedding.
         :param x: an [N x C x ...] Tensor of features.
@@ -209,7 +208,7 @@ class ResBlock(TimestepBlock):
             emb_out = emb_out[..., None]
         if self.use_scale_shift_norm:
             out_norm, out_rest = self.out_layers[0], self.out_layers[1:]
-            scale, shift = torch.chunk(emb_out, 2, dim=1)
+            scale, shift = ops.chunk(emb_out, 2, axis=1)
             h = out_norm(h) * (1 + scale) + shift
             h = out_rest(h)
         else:
@@ -222,7 +221,7 @@ class ResBlock(TimestepBlock):
         return res
 
 
-class AttentionBlock(nn.Module):
+class AttentionBlock(nn.Cell):
     """
     An attention block that allows spatial positions to attend to each other.
     Originally ported from here, but adapted to the N-d case.
@@ -262,7 +261,7 @@ class AttentionBlock(nn.Module):
             self.norm_encoder = normalization(encoder_channels, dtype=self.dtype)
         self.proj_out = zero_module(conv_nd(1, channels, channels, 1, dtype=self.dtype))
 
-    def forward(self, x, encoder_out=None):
+    def construct(self, x, encoder_out=None):
         b, c, *spatial = x.shape
         qkv = self.qkv(self.norm(x).view(b, c, -1))
         if encoder_out is not None:
@@ -277,7 +276,7 @@ class AttentionBlock(nn.Module):
         return x + h.reshape(b, c, *spatial)
 
 
-class QKVAttention(nn.Module):
+class QKVAttention(nn.Cell):
     """
     A module which performs QKV attention. Matches legacy QKVAttention + input/ouput heads shaping
     """
@@ -287,7 +286,7 @@ class QKVAttention(nn.Module):
         self.n_heads = n_heads
         self.disable_self_attention = disable_self_attention
 
-    def forward(self, qkv, encoder_kv=None):
+    def construct(self, qkv, encoder_kv=None):
         """
         Apply QKV attention.
         :param qkv: an [N x (H * 3 * C) x T] tensor of Qs, Ks, and Vs.
@@ -307,23 +306,23 @@ class QKVAttention(nn.Module):
                 k, v = encoder_kv.reshape(bs * self.n_heads, ch * 2, -1).split(ch, dim=1)
             else:
                 ek, ev = encoder_kv.reshape(bs * self.n_heads, ch * 2, -1).split(ch, dim=1)
-                k = torch.cat([ek, k], dim=-1)
-                v = torch.cat([ev, v], dim=-1)
+                k = ops.cat([ek, k], axis=-1)
+                v = ops.cat([ev, v], axis=-1)
         scale = 1 / math.sqrt(math.sqrt(ch))
         if _FORCE_MEM_EFFICIENT_ATTN:
             q, k, v = map(lambda t: t.permute(0, 2, 1).contiguous(), (q, k, v))
             a = memory_efficient_attention(q, k, v)
             a = a.permute(0, 2, 1)
         else:
-            weight = torch.einsum(
-                'bct,bcs->bts', q * scale, k * scale
+            weight = ops.BatchMatMul(transpose_a=True)(  # 'bct,bcs->bts'
+                q * scale, k * scale
             )  # More stable with f16 than dividing afterwards
-            weight = torch.softmax(weight.float(), dim=-1).type(weight.dtype)
-            a = torch.einsum('bts,bcs->bct', weight, v)
+            weight = ops.softmax(weight.float(), axis=-1).type(weight.dtype)
+            a = ops.BatchMatMul(transpose_b=True)(v, weight)  # 'bcs,bts->bct'
         return a.reshape(bs, -1, length)
 
 
-class UNetModel(nn.Module):
+class UNetModel(nn.Cell):
     """
     The full UNet model with attention and timestep embedding.
     :param in_channels: channels in the input Tensor.
@@ -424,31 +423,31 @@ class UNetModel(nn.Module):
 
         self.conv_resample = conv_resample
         self.num_classes = num_classes
-        self.dtype = torch.float32
+        self.dtype = ms.float32
 
         self.precision = str(precision)
         self.use_fp16 = precision == '16'
         if self.precision == '16':
-            self.dtype = torch.float16
+            self.dtype = ms.float16
         elif self.precision == 'bf16':
-            self.dtype = torch.bfloat16
+            raise NotImplementedError("MindSpore does not support bf16!")
 
         self.num_heads = num_heads
         self.num_head_channels = num_head_channels
         self.num_heads_upsample = num_heads_upsample
 
         self.time_embed_dim = model_channels * max(self.channel_mult)
-        self.time_embed = nn.Sequential(
+        self.time_embed = nn.SequentialCell([
             linear(model_channels, self.time_embed_dim, dtype=self.dtype),
             get_activation(activation),
             linear(self.time_embed_dim, self.time_embed_dim, dtype=self.dtype),
-        )
+        ])
 
         if self.num_classes is not None:
             self.label_emb = nn.Embedding(num_classes, self.time_embed_dim)
 
         ch = input_ch = int(self.channel_mult[0] * model_channels)
-        self.input_blocks = nn.ModuleList(
+        self.input_blocks = nn.CellList(
             [TimestepEmbedSequential(conv_nd(dims, in_channels, ch, 3, padding=1, dtype=self.dtype))]
         )
         self._feature_size = ch
@@ -550,7 +549,7 @@ class UNetModel(nn.Module):
         )
         self._feature_size += ch
 
-        self.output_blocks = nn.ModuleList([])
+        output_blocks = []
         for level, mult in list(enumerate(self.channel_mult))[::-1]:
             for i in range(num_res_blocks[level] + 1):
                 ich = input_block_chans.pop()
@@ -600,32 +599,33 @@ class UNetModel(nn.Module):
                         else Upsample(ch, conv_resample, dims=dims, out_channels=out_ch)
                     )
                     ds //= 2
-                self.output_blocks.append(TimestepEmbedSequential(*layers))
+                output_blocks.append(TimestepEmbedSequential(*layers))
                 self._feature_size += ch
+        self.output_blocks = nn.CellList(output_blocks)
 
-        self.out = nn.Sequential(
+        self.out = nn.SequentialCell([
             normalization(ch, dtype=self.dtype),
             get_activation(activation),
             zero_module(conv_nd(dims, input_ch, out_channels, 3, padding=1, dtype=self.dtype)),
-        )
+        ])
 
         self.activation_layer = get_activation(activation) if self.efficient_activation else nn.Identity()
 
-        self.encoder_pooling = nn.Sequential(
-            nn.LayerNorm(encoder_dim, dtype=self.dtype),
+        self.encoder_pooling = nn.SequentialCell([
+            nn.LayerNorm(encoder_dim),
             AttentionPooling(att_pool_heads, encoder_dim, dtype=self.dtype),
-            nn.Linear(encoder_dim, self.time_embed_dim, dtype=self.dtype),
-            nn.LayerNorm(self.time_embed_dim, dtype=self.dtype)
-        )
+            nn.Dense(encoder_dim, self.time_embed_dim),
+            nn.LayerNorm(self.time_embed_dim)
+        ])
 
         if encoder_dim != encoder_channels:
-            self.encoder_proj = nn.Linear(encoder_dim, encoder_channels, dtype=self.dtype)
+            self.encoder_proj = nn.Dense(encoder_dim, encoder_channels)
         else:
             self.encoder_proj = nn.Identity()
 
         self.cache = None
 
-    def forward(self, x, timesteps, text_emb, timestep_text_emb=None, aug_emb=None, use_cache=False, **kwargs):
+    def construct(self, x, timesteps, text_emb, timestep_text_emb=None, aug_emb=None, use_cache=False, **kwargs):
         hs = []
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels, dtype=self.dtype))
 
@@ -654,7 +654,7 @@ class UNetModel(nn.Module):
             hs.append(h)
         h = self.middle_block(h, emb, encoder_out)
         for module in self.output_blocks:
-            h = torch.cat([h, hs.pop()], dim=1)
+            h = ops.cat([h, hs.pop()], axis=1)
             h = module(h, emb, encoder_out)
         h = h.type(self.dtype)
         h = self.out(h)
@@ -672,33 +672,33 @@ class SuperResUNetModel(UNetModel):
         self.interpolate_mode = interpolate_mode
         super().__init__(*args, **kwargs)
 
-        self.aug_proj = nn.Sequential(
+        self.aug_proj = nn.SequentialCell([
             linear(self.model_channels, self.time_embed_dim, dtype=self.dtype),
             get_activation(kwargs['activation']),
             linear(self.time_embed_dim, self.time_embed_dim, dtype=self.dtype),
-        )
+        ])
 
-    def forward(self, x, timesteps, low_res, aug_level=None, **kwargs):
+    def construct(self, x, timesteps, low_res, aug_level=None, **kwargs):
         bs, _, new_height, new_width = x.shape
 
         align_corners = True
         if self.interpolate_mode == 'nearest':
             align_corners = None
 
-        upsampled = F.interpolate(
+        upsampled = ops.interpolate(
             low_res, (new_height, new_width), mode=self.interpolate_mode, align_corners=align_corners
         )
 
         if aug_level is None:
             aug_steps = (np.random.random(bs)*1000).astype(np.int64)  # uniform [0, 1)
-            aug_steps = torch.from_numpy(aug_steps).to(x.device, dtype=torch.long)
+            aug_steps = ms.Tensor(aug_steps).to(dtype=ms.int64)
         else:
-            aug_steps = torch.tensor([int(aug_level * 1000)]).repeat(bs).to(x.device, dtype=torch.long)
+            aug_steps = ms.Tensor([int(aug_level * 1000)]).repeat(bs).to(dtype=ms.int64)
 
         upsampled = self.low_res_diffusion.q_sample(upsampled, aug_steps)
-        x = torch.cat([x, upsampled], dim=1)
+        x = ops.cat([x, upsampled], axis=1)
 
         aug_emb = self.aug_proj(
             timestep_embedding(aug_steps, self.model_channels, dtype=self.dtype)
         )
-        return super().forward(x, timesteps, aug_emb=aug_emb, **kwargs)
+        return super().construct(x, timesteps, aug_emb=aug_emb, **kwargs)

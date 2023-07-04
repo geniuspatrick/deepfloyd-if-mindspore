@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-import accelerate
 
 from .base import IFBaseModule
 from ..model import UNetModel
@@ -19,10 +18,10 @@ class IFStageI(IFBaseModule):
         super().__init__(*args, pil_img_size=pil_img_size, **kwargs)
         model_params = dict(self.conf.params)
         model_params.update(model_kwargs or {})
-        with accelerate.init_empty_weights():
-            self.model = UNetModel(**model_params)
+        # with accelerate.init_empty_weights():
+        self.model = UNetModel(**model_params)
         self.model = self.load_checkpoint(self.model, self.dir_or_name)
-        self.model.eval().to(self.device)
+        self.model.eval()
 
     def embeddings_to_image(self, t5_embs, style_t5_embs=None, positive_t5_embs=None, negative_t5_embs=None,
                             batch_repeat=1, dynamic_thresholding_p=0.95, sample_loop='ddpm', positive_mixer=0.25,

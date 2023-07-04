@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from abc import ABC, abstractmethod
 
-import torch
+import mindspore as ms
 import numpy as np
 
 
@@ -34,9 +34,9 @@ class ScheduleSampler(ABC):
         w = self.weights()
         p = w / np.sum(w)
         indices_np = np.random.choice(len(p), size=(batch_size,), p=p)
-        indices = torch.from_numpy(indices_np).long().to(device)
+        indices = ms.Tensor(indices_np).long()
         weights_np = 1 / (len(p) * p[indices_np])
-        weights = torch.from_numpy(weights_np).float().to(device)
+        weights = ms.Tensor(weights_np).float()
         return indices, weights
 
 
@@ -53,6 +53,6 @@ class StaticSampler(ABC):
     def sample(self, batch_size, device, static_step=100):
         indices_np = np.ones(batch_size, dtype=np.int) * static_step
         weights_np = np.ones(batch_size, dtype=np.int)
-        indices = torch.from_numpy(indices_np).long().to(device)
-        weights = torch.from_numpy(weights_np).float().to(device)
+        indices = ms.Tensor(indices_np).long()
+        weights = ms.Tensor(weights_np).float()
         return indices, weights

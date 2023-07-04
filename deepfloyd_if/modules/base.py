@@ -1,18 +1,15 @@
 # -*- coding: utf-8 -*-
 import os
 import random
-import platform
 from datetime import datetime
 
-import torch
-import torchvision
+import mindspore as ms
+from mindspore import ops
+from mindspore.dataset import vision
 import numpy as np
 import matplotlib.pyplot as plt
-import torchvision.transforms as T
 from PIL import Image
 from omegaconf import OmegaConf
-from huggingface_hub import hf_hub_download
-from accelerate.utils import set_module_tensor_to_device
 
 
 from .. import utils
@@ -26,7 +23,7 @@ class IFBaseModule:
 
     available_models = []
     cpu_zero_emb = np.load(os.path.join(utils.RESOURCES_ROOT, 'zero_t5-v1_1-xxl_vector.npy'))
-    cpu_zero_emb = torch.from_numpy(cpu_zero_emb)
+    cpu_zero_emb = ms.Tensor(cpu_zero_emb)
 
     respacing_modes = {
         'fast27': '10,10,3,2,2',
@@ -47,6 +44,7 @@ class IFBaseModule:
         print('Warning! You should install CLIP: "pip install git+https://github.com/openai/CLIP.git --no-deps"')
         raise
 
+    # todo: we need to implement clip in mindspore
     clip_model, clip_preprocess = clip.load('ViT-L/14', device='cpu')
     clip_model.eval()
 
@@ -54,13 +52,12 @@ class IFBaseModule:
     cpu_p_weights, cpu_p_biases = load_model_weights(os.path.join(utils.RESOURCES_ROOT, 'p_head_v1.npz'))
     w_threshold, p_threshold = 0.5, 0.5
 
-    def __init__(self, dir_or_name, device, pil_img_size=256, cache_dir=None, hf_token=None):
+    def __init__(self, dir_or_name, pil_img_size=256, cache_dir=None, hf_token=None):
         self.hf_token = hf_token
         self.cache_dir = cache_dir or os.path.expanduser('~/.cache/IF_')
         self.dir_or_name = dir_or_name
         self.conf = self.load_conf(dir_or_name) if not self.use_diffusers else None
-        self.device = torch.device(device)
-        self.zero_emb = self.cpu_zero_emb.clone().to(self.device)
+        self.zero_emb = self.cpu_zero_emb.clone()
         self.pil_img_size = pil_img_size
 
     @property
@@ -100,36 +97,36 @@ class IFBaseModule:
 
         def model_fn(x_t, ts, **kwargs):
             half = x_t[: len(x_t) // bs_scale]
-            combined = torch.cat([half]*bs_scale, dim=0)
+            combined = ops.cat([half]*bs_scale, axis=0)
             model_out = self.model(combined, ts, **kwargs)
             eps, rest = model_out[:, :3], model_out[:, 3:]
             if bs_scale == 3:
-                cond_eps, pos_cond_eps, uncond_eps = torch.split(eps, len(eps) // bs_scale, dim=0)
+                cond_eps, pos_cond_eps, uncond_eps = ops.split(eps, len(eps) // bs_scale, axis=0)
                 half_eps = uncond_eps + guidance_scale * (
                     cond_eps * (1 - positive_mixer) + pos_cond_eps * positive_mixer - uncond_eps)
                 pos_half_eps = uncond_eps + guidance_scale * (pos_cond_eps - uncond_eps)
-                eps = torch.cat([half_eps, pos_half_eps, half_eps], dim=0)
+                eps = ops.cat([half_eps, pos_half_eps, half_eps], axis=0)
             else:
-                cond_eps, uncond_eps = torch.split(eps, len(eps) // bs_scale, dim=0)
+                cond_eps, uncond_eps = ops.split(eps, len(eps) // bs_scale, axis=0)
                 half_eps = uncond_eps + guidance_scale * (cond_eps - uncond_eps)
-                eps = torch.cat([half_eps, half_eps], dim=0)
-            return torch.cat([eps, rest], dim=1)
+                eps = ops.cat([half_eps, half_eps], axis=0)
+            return ops.cat([eps, rest], axis=1)
 
         seed = self.seed_everything(seed)
 
-        text_emb = t5_embs.to(self.device, dtype=self.model.dtype).repeat(batch_repeat, 1, 1)
+        text_emb = t5_embs.to(dtype=self.model.dtype).repeat(batch_repeat, 1, 1)
         batch_size = text_emb.shape[0] * batch_repeat
 
         if positive_t5_embs is not None:
-            positive_t5_embs = positive_t5_embs.to(self.device, dtype=self.model.dtype).repeat(batch_repeat, 1, 1)
+            positive_t5_embs = positive_t5_embs.to(dtype=self.model.dtype).repeat(batch_repeat, 1, 1)
 
         if negative_t5_embs is not None:
-            negative_t5_embs = negative_t5_embs.to(self.device, dtype=self.model.dtype).repeat(batch_repeat, 1, 1)
+            negative_t5_embs = negative_t5_embs.to(dtype=self.model.dtype).repeat(batch_repeat, 1, 1)
 
         timestep_text_emb = None
         if style_t5_embs is not None:
             list_timestep_text_emb = [
-                style_t5_embs.to(self.device, dtype=self.model.dtype).repeat(batch_repeat, 1, 1),
+                style_t5_embs.to(dtype=self.model.dtype).repeat(batch_repeat, 1, 1),
             ]
             if positive_t5_embs is not None:
                 list_timestep_text_emb.append(positive_t5_embs)
@@ -137,8 +134,8 @@ class IFBaseModule:
                 list_timestep_text_emb.append(negative_t5_embs)
             else:
                 list_timestep_text_emb.append(
-                    self.zero_emb.unsqueeze(0).repeat(batch_size, 1, 1).to(self.device, dtype=self.model.dtype))
-            timestep_text_emb = torch.cat(list_timestep_text_emb, dim=0).to(self.device, dtype=self.model.dtype)
+                    self.zero_emb.unsqueeze(0).repeat(batch_size, 1, 1).to(dtype=self.model.dtype))
+            timestep_text_emb = ops.cat(list_timestep_text_emb, axis=0).to(dtype=self.model.dtype)
 
         metadata = {
             'seed': seed,
@@ -153,73 +150,73 @@ class IFBaseModule:
             'stage': self.stage,
         }
 
-        list_text_emb = [t5_embs.to(self.device)]
+        list_text_emb = [t5_embs]
         if positive_t5_embs is not None:
-            list_text_emb.append(positive_t5_embs.to(self.device))
+            list_text_emb.append(positive_t5_embs)
         if negative_t5_embs is not None:
-            list_text_emb.append(negative_t5_embs.to(self.device))
+            list_text_emb.append(negative_t5_embs)
         else:
             list_text_emb.append(
-                self.zero_emb.unsqueeze(0).repeat(batch_size, 1, 1).to(self.device, dtype=self.model.dtype))
+                self.zero_emb.unsqueeze(0).repeat(batch_size, 1, 1).to(dtype=self.model.dtype))
 
         model_kwargs = dict(
-            text_emb=torch.cat(list_text_emb, dim=0).to(self.device, dtype=self.model.dtype),
+            text_emb=ops.cat(list_text_emb, axis=0).to(dtype=self.model.dtype),
             timestep_text_emb=timestep_text_emb,
             use_cache=True,
         )
         if low_res is not None:
             if blur_sigma is not None:
-                low_res = T.GaussianBlur(3, sigma=(blur_sigma, blur_sigma))(low_res)
-            model_kwargs['low_res'] = torch.cat([low_res]*bs_scale, dim=0).to(self.device)
+                low_res = vision.GaussianBlur(3, sigma=(blur_sigma, blur_sigma))(low_res)
+            model_kwargs['low_res'] = ops.cat([low_res]*bs_scale, axis=0)
             model_kwargs['aug_level'] = aug_level
 
         if support_noise is None:
-            noise = torch.randn(
-                (batch_size * bs_scale, 3, image_h, image_w), device=self.device, dtype=self.model.dtype)
+            noise = ops.randn(
+                (batch_size * bs_scale, 3, image_h, image_w), dtype=self.model.dtype)
         else:
             assert support_noise_less_qsample_steps < len(diffusion.timestep_map) - 1
             assert support_noise.shape == (1, 3, image_h, image_w)
-            q_sample_steps = torch.tensor([int(len(diffusion.timestep_map) - 1 - support_noise_less_qsample_steps)])
+            q_sample_steps = ms.Tensor([int(len(diffusion.timestep_map) - 1 - support_noise_less_qsample_steps)])
             support_noise = support_noise.cpu()
             noise = support_noise.clone()
             noise[inpainting_mask.cpu().bool() if inpainting_mask is not None else ...] = diffusion.q_sample(
                 support_noise[inpainting_mask.cpu().bool() if inpainting_mask is not None else ...],
                 q_sample_steps,
             )
-            noise = noise.repeat(batch_size*bs_scale, 1, 1, 1).to(device=self.device, dtype=self.model.dtype)
+            noise = noise.repeat(batch_size*bs_scale, 1, 1, 1).to(dtype=self.model.dtype)
 
         if inpainting_mask is not None:
-            inpainting_mask = inpainting_mask.to(device=self.device, dtype=torch.long)
+            inpainting_mask = inpainting_mask.to(dtype=ms.int64)
 
         if sample_loop == 'ddpm':
-            with torch.no_grad():
-                sample = diffusion.p_sample_loop(
-                    model_fn,
-                    (batch_size * bs_scale, 3, image_h, image_w),
-                    noise=noise,
-                    clip_denoised=True,
-                    model_kwargs=model_kwargs,
-                    dynamic_thresholding_p=dynamic_thresholding_p,
-                    dynamic_thresholding_c=dynamic_thresholding_c,
-                    inpainting_mask=inpainting_mask,
-                    device=self.device,
-                    progress=progress,
-                    sample_fn=sample_fn,
-                )[:batch_size]
+            # with torch.no_grad():
+            # todo: can we safely remove no_grad?
+            sample = diffusion.p_sample_loop(
+                model_fn,
+                (batch_size * bs_scale, 3, image_h, image_w),
+                noise=noise,
+                clip_denoised=True,
+                model_kwargs=model_kwargs,
+                dynamic_thresholding_p=dynamic_thresholding_p,
+                dynamic_thresholding_c=dynamic_thresholding_c,
+                inpainting_mask=inpainting_mask,
+                progress=progress,
+                sample_fn=sample_fn,
+            )[:batch_size]
         elif sample_loop == 'ddim':
-            with torch.no_grad():
-                sample = diffusion.ddim_sample_loop(
-                    model_fn,
-                    (batch_size * bs_scale, 3, image_h, image_w),
-                    noise=noise,
-                    clip_denoised=True,
-                    model_kwargs=model_kwargs,
-                    dynamic_thresholding_p=dynamic_thresholding_p,
-                    dynamic_thresholding_c=dynamic_thresholding_c,
-                    device=self.device,
-                    progress=progress,
-                    sample_fn=sample_fn,
-                )[:batch_size]
+            # with torch.no_grad():
+            # todo: can we safely remove no_grad?
+            sample = diffusion.ddim_sample_loop(
+                model_fn,
+                (batch_size * bs_scale, 3, image_h, image_w),
+                noise=noise,
+                clip_denoised=True,
+                model_kwargs=model_kwargs,
+                dynamic_thresholding_p=dynamic_thresholding_p,
+                dynamic_thresholding_c=dynamic_thresholding_c,
+                progress=progress,
+                sample_fn=sample_fn,
+            )[:batch_size]
         else:
             raise ValueError(f'Sample loop "{sample_loop}" doesnt support')
 
@@ -236,10 +233,8 @@ class IFBaseModule:
     def load_checkpoint(self, model, dir_or_name, filename='pytorch_model.bin'):
         path = self._get_path_or_download_file_from_hf(dir_or_name, filename)
         if os.path.exists(path):
-            checkpoint = torch.load(path, map_location='cpu')
-            param_device = 'cpu'
-            for param_name, param in checkpoint.items():
-                set_module_tensor_to_device(model, param_name, param_device, value=param)
+            checkpoint = ms.load_checkpoint(path)
+            ms.load_param_into_net(model, checkpoint)
         else:
             print(f'Warning! In directory "{dir_or_name}" filename "pytorch_model.bin" is not found.')
         return model
@@ -247,8 +242,7 @@ class IFBaseModule:
     def _get_path_or_download_file_from_hf(self, dir_or_name, filename):
         if dir_or_name in self.available_models:
             cache_dir = os.path.join(self.cache_dir, dir_or_name)
-            hf_hub_download(repo_id=f'DeepFloyd/{dir_or_name}', filename=filename, cache_dir=cache_dir,
-                            force_filename=filename, token=self.hf_token)
+            print(f"You need to manually download DeepFloyd/{dir_or_name}/{filename} to {cache_dir}/{filename}!")
             return os.path.join(cache_dir, filename)
         else:
             return os.path.join(dir_or_name, filename)
@@ -275,18 +269,11 @@ class IFBaseModule:
         random.seed(seed)
         os.environ['PYTHONHASHSEED'] = str(seed)
         np.random.seed(seed)
-        torch.manual_seed(seed)
-        torch.cuda.manual_seed(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = True
+        ms.set_seed(seed)
         return seed
 
     def device_name(self):
-        if self.device.type == 'cpu':
-            return 'cpu_' + str(platform.processor())
-        if self.device.type == 'cuda':
-            return torch.cuda.get_device_name(self.device)
-        return '-'
+        return f'{ms.get_context("device_target")}_{ms.get_context("device_id")}'
 
     def to_images(self, generations, disable_watermark=False):
         bs, c, h, w = generations.shape
@@ -301,8 +288,8 @@ class IFBaseModule:
             (wm_size, wm_size), getattr(Image, 'Resampling', Image).BICUBIC, reducing_gap=None)
 
         pil_images = []
-        for image in ((generations + 1) * 127.5).round().clamp(0, 255).to(torch.uint8).cpu():
-            pil_img = torchvision.transforms.functional.to_pil_image(image).convert('RGB')
+        for image in ((generations + 1) * 127.5).round().clamp(0, 255).to(ms.uint8).cpu():
+            pil_img = Image.fromarray(image.asnumpy()).convert('RGB')
             pil_img = pil_img.resize((img_w, img_h), getattr(Image, 'Resampling', Image).NEAREST)
             if not disable_watermark:
                 pil_img.paste(wm_img, box=(wm_x - wm_size, wm_y - wm_size, wm_x, wm_y), mask=wm_img.split()[-1])
@@ -313,14 +300,23 @@ class IFBaseModule:
         if nrow is None:
             nrow = round(len(pil_images)**0.5)
 
-        imgs = torchvision.utils.make_grid(utils.pil_list_to_torch_tensors(pil_images), nrow=nrow)
+        def make_grid(imgs, rows, cols):
+            assert len(imgs) == rows * cols
+
+            w, h = imgs[0].size
+            grid = Image.new('RGB', size=(cols * w, rows * h))
+            grid_w, grid_h = grid.size
+
+            for i, img in enumerate(imgs):
+                grid.paste(img, box=(i % cols * w, i // cols * h))
+            return grid
+
+        imgs = make_grid(pil_images, nrow, len(pil_images) / nrow)
         if not isinstance(imgs, list):
-            imgs = [imgs.cpu()]
+            imgs = [imgs]
 
         fix, axs = plt.subplots(ncols=len(imgs), squeeze=False, figsize=(size, size))
         for i, img in enumerate(imgs):
-            img = img.detach()
-            img = torchvision.transforms.functional.to_pil_image(img)
             axs[0, i].imshow(np.asarray(img))
             axs[0, i].set(xticklabels=[], yticklabels=[], xticks=[], yticks=[])
 
@@ -350,16 +346,17 @@ class IFBaseModule:
         return image_w, image_h
 
     def __validate_generations(self, generations):
-        with torch.no_grad():
-            imgs = clip_process_generations(generations)
-            image_features = self.clip_model.encode_image(imgs.to('cpu'))
-            image_features = image_features.detach().cpu().numpy().astype(np.float16)
-            p_pred = predict_proba(image_features, self.cpu_p_weights, self.cpu_p_biases)
-            w_pred = predict_proba(image_features, self.cpu_w_weights, self.cpu_w_biases)
-            query = p_pred > self.p_threshold
-            if query.sum() > 0:
-                generations[query] = T.GaussianBlur(99, sigma=(100.0, 100.0))(generations[query])
-            query = w_pred > self.w_threshold
-            if query.sum() > 0:
-                generations[query] = T.GaussianBlur(99, sigma=(100.0, 100.0))(generations[query])
+        # with torch.no_grad():
+        # todo: can we safely remove no_grad?
+        imgs = clip_process_generations(generations)
+        image_features = self.clip_model.encode_image(imgs.to('cpu'))
+        image_features = image_features.detach().cpu().numpy().astype(np.float16)
+        p_pred = predict_proba(image_features, self.cpu_p_weights, self.cpu_p_biases)
+        w_pred = predict_proba(image_features, self.cpu_w_weights, self.cpu_w_biases)
+        query = p_pred > self.p_threshold
+        if query.sum() > 0:
+            generations[query] = vision.GaussianBlur(99, sigma=(100.0, 100.0))(generations[query])
+        query = w_pred > self.w_threshold
+        if query.sum() > 0:
+            generations[query] = vision.GaussianBlur(99, sigma=(100.0, 100.0))(generations[query])
         return generations

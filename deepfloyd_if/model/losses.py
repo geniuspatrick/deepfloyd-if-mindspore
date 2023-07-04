@@ -5,7 +5,8 @@ Ho et al. diffusion model codebase:
 https://github.com/hojonathanho/diffusion/blob/1e0dceb3b3495bbe19116a5e1b3596cd0706c543/diffusion_tf/utils.py
 """
 
-import torch
+import mindspore as ms
+from mindspore import ops
 import numpy as np
 
 
@@ -17,7 +18,7 @@ def normal_kl(mean1, logvar1, mean2, logvar2):
     """
     tensor = None
     for obj in (mean1, logvar1, mean2, logvar2):
-        if isinstance(obj, torch.Tensor):
+        if isinstance(obj, ms.Tensor):
             tensor = obj
             break
     assert tensor is not None, 'at least one argument must be a Tensor'
@@ -25,7 +26,7 @@ def normal_kl(mean1, logvar1, mean2, logvar2):
     # Force variances to be Tensors. Broadcasting helps convert scalars to
     # Tensors, but it does not work for th.exp().
     logvar1, logvar2 = [
-        x if isinstance(x, torch.Tensor) else torch.tensor(x).to(tensor)
+        x if isinstance(x, ms.Tensor) else ms.Tensor(x).to(tensor.dtype)
         for x in (logvar1, logvar2)
     ]
 
@@ -33,8 +34,8 @@ def normal_kl(mean1, logvar1, mean2, logvar2):
         -1.0
         + logvar2
         - logvar1
-        + torch.exp(logvar1 - logvar2)
-        + ((mean1 - mean2) ** 2) * torch.exp(-logvar2)
+        + ops.exp(logvar1 - logvar2)
+        + ((mean1 - mean2) ** 2) * ops.exp(-logvar2)
     )
 
 

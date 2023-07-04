@@ -5,10 +5,10 @@ import html
 import urllib.parse as ul
 
 import ftfy
-import torch
+import mindspore as ms
+from mindspore import ops
 from bs4 import BeautifulSoup
 from transformers import T5EncoderModel, AutoTokenizer
-from huggingface_hub import hf_hub_download
 
 
 class T5Embedder:
@@ -19,7 +19,7 @@ class T5Embedder:
     def __init__(self, device, dir_or_name='t5-v1_1-xxl', *, cache_dir=None, hf_token=None, use_text_preprocessing=True,
                  t5_model_kwargs=None, torch_dtype=None, use_offload_folder=None):
         self.device = torch.device(device)
-        self.torch_dtype = torch_dtype or torch.bfloat16
+        self.torch_dtype = torch_dtype or ms.float16
         if t5_model_kwargs is None:
             t5_model_kwargs = {'low_cpu_mem_usage': True, 'torch_dtype': self.torch_dtype}
             if use_offload_folder is not None:
@@ -69,16 +69,14 @@ class T5Embedder:
                 'config.json', 'special_tokens_map.json', 'spiece.model', 'tokenizer_config.json',
                 'pytorch_model.bin.index.json', 'pytorch_model-00001-of-00002.bin', 'pytorch_model-00002-of-00002.bin'
             ]:
-                hf_hub_download(repo_id=f'DeepFloyd/{dir_or_name}', filename=filename, cache_dir=cache_dir,
-                                force_filename=filename, token=self.hf_token)
+                print(f"You need to manually download DeepFloyd/{dir_or_name}/{filename} to {cache_dir}/{filename}!")
             tokenizer_path, path = cache_dir, cache_dir
         else:
             cache_dir = os.path.join(self.cache_dir, 't5-v1_1-xxl')
             for filename in [
                 'config.json', 'special_tokens_map.json', 'spiece.model', 'tokenizer_config.json',
             ]:
-                hf_hub_download(repo_id='DeepFloyd/t5-v1_1-xxl', filename=filename, cache_dir=cache_dir,
-                                force_filename=filename, token=self.hf_token)
+                print(f"You need to manually download DeepFloyd/t5-v1_1-xxl/{filename} to {cache_dir}/{filename}!")
             tokenizer_path = cache_dir
 
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
@@ -99,11 +97,13 @@ class T5Embedder:
         text_tokens_and_mask['input_ids'] = text_tokens_and_mask['input_ids']
         text_tokens_and_mask['attention_mask'] = text_tokens_and_mask['attention_mask']
 
-        with torch.no_grad():
-            text_encoder_embs = self.model(
-                input_ids=text_tokens_and_mask['input_ids'].to(self.device),
-                attention_mask=text_tokens_and_mask['attention_mask'].to(self.device),
-            )['last_hidden_state'].detach()
+        # with torch.no_grad():
+        # todo: can we safely remove no_grad?
+        text_encoder_embs = self.model(
+            input_ids=text_tokens_and_mask['input_ids'].to(self.device),
+            attention_mask=text_tokens_and_mask['attention_mask'].to(self.device),
+        )['last_hidden_state']
+        text_encoder_embs = ops.stop_gradient(text_encoder_embs)
 
         return text_encoder_embs
 

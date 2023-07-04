@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import torch
+import mindspore as ms
 import numpy as np
 
 from . import gaussian_diffusion as gd
@@ -159,7 +159,7 @@ class _WrappedModel:
         self.original_num_steps = original_num_steps
 
     def __call__(self, x, ts, **kwargs):
-        map_tensor = torch.tensor(self.timestep_map, device=ts.device, dtype=ts.dtype)
+        map_tensor = ms.Tensor(self.timestep_map, dtype=ts.dtype)
         new_ts = map_tensor[ts]
         if self.rescale_timesteps:
             new_ts = new_ts.float() * (1000.0 / self.original_num_steps)
