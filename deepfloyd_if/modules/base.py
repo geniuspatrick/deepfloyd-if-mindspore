@@ -38,15 +38,15 @@ class IFBaseModule:
 
     wm_pil_img = Image.open(os.path.join(utils.RESOURCES_ROOT, 'wm.png'))
 
-    try:
-        import clip  # noqa
-    except ModuleNotFoundError:
-        print('Warning! You should install CLIP: "pip install git+https://github.com/openai/CLIP.git --no-deps"')
-        raise
-
     # todo: we need to implement clip in mindspore
-    clip_model, clip_preprocess = clip.load('ViT-L/14', device='cpu')
-    clip_model.eval()
+    # try:
+    #     import clip  # noqa
+    # except ModuleNotFoundError:
+    #     print('Warning! You should install CLIP: "pip install git+https://github.com/openai/CLIP.git --no-deps"')
+    #     raise
+    #
+    # clip_model, clip_preprocess = clip.load('ViT-L/14', device='cpu')
+    # clip_model.eval()
 
     cpu_w_weights, cpu_w_biases = load_model_weights(os.path.join(utils.RESOURCES_ROOT, 'w_head_v1.npz'))
     cpu_p_weights, cpu_p_biases = load_model_weights(os.path.join(utils.RESOURCES_ROOT, 'p_head_v1.npz'))
