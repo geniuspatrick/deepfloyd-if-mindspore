@@ -1411,7 +1411,7 @@ class T5Model(T5PreTrainedModel):
 
     @add_start_docstrings_to_model_forward(T5_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=Seq2SeqModelOutput, config_class=_CONFIG_FOR_DOC)
-    def forward(
+    def construct(
         self,
         input_ids: Optional[ms.Tensor] = None,  # torch.LongTensor
         attention_mask: Optional[ms.Tensor] = None,
@@ -1615,7 +1615,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
 
     @add_start_docstrings_to_model_forward(T5_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=Seq2SeqLMOutput, config_class=_CONFIG_FOR_DOC)
-    def forward(
+    def construct(
         self,
         input_ids: Optional[ms.Tensor] = None,  # torch.LongTensor
         attention_mask: Optional[ms.Tensor] = None,
@@ -1904,7 +1904,7 @@ class T5EncoderModel(T5PreTrainedModel):
 
     @add_start_docstrings_to_model_forward(T5_ENCODER_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=BaseModelOutput, config_class=_CONFIG_FOR_DOC)
-    def forward(
+    def construct(
         self,
         input_ids: Optional[ms.Tensor] = None,  # torch.LongTensor
         attention_mask: Optional[ms.Tensor] = None,
@@ -1998,7 +1998,7 @@ class T5ForQuestionAnswering(T5PreTrainedModel):
 
     @add_start_docstrings_to_model_forward(T5_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=Seq2SeqQuestionAnsweringModelOutput, config_class=_CONFIG_FOR_DOC)
-    def forward(
+    def construct(
         self,
         input_ids: Optional[ms.Tensor] = None,  # torch.LongTensor
         attention_mask: Optional[ms.Tensor] = None,

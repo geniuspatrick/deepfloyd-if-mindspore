@@ -153,7 +153,7 @@ def normalization(channels, dtype=None):
     """
     Make a standard normalization layer.
     :param channels: number of input channels.
-    :return: an nn.Module for normalization.
+    :return: an nn.Cell for normalization.
     """
     return GroupNorm32(num_channels=channels, num_groups=32, dtype=dtype)
 

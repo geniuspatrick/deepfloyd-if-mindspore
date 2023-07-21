@@ -22,12 +22,11 @@ from typing import Any, Dict, Union
 
 from packaging import version
 
-from ..utils import is_torch_available, logging
+from ..utils import logging
 from ..utils.import_utils import importlib_metadata
 
 
-if is_torch_available():
-    import torch
+import mindspore as ms
 
 
 logger = logging.get_logger(__name__)
@@ -107,10 +106,10 @@ class BitsAndBytesConfig:
         self.bnb_4bit_use_double_quant = bnb_4bit_use_double_quant
 
         if bnb_4bit_compute_dtype is None:
-            self.bnb_4bit_compute_dtype = torch.float32
+            self.bnb_4bit_compute_dtype = ms.float32
         elif isinstance(bnb_4bit_compute_dtype, str):
-            self.bnb_4bit_compute_dtype = getattr(torch, bnb_4bit_compute_dtype)
-        elif isinstance(bnb_4bit_compute_dtype, torch.dtype):
+            self.bnb_4bit_compute_dtype = getattr(ms.dtype, bnb_4bit_compute_dtype)
+        elif isinstance(bnb_4bit_compute_dtype, ms.dtype.TensorType):
             self.bnb_4bit_compute_dtype = bnb_4bit_compute_dtype
         else:
             raise ValueError("bnb_4bit_compute_dtype must be a string or a torch.dtype")
@@ -132,7 +131,7 @@ class BitsAndBytesConfig:
         if not isinstance(self.llm_int8_has_fp16_weight, bool):
             raise ValueError("llm_int8_has_fp16_weight must be a boolean")
 
-        if self.bnb_4bit_compute_dtype is not None and not isinstance(self.bnb_4bit_compute_dtype, torch.dtype):
+        if self.bnb_4bit_compute_dtype is not None and not isinstance(self.bnb_4bit_compute_dtype, ms.dtype.TensorType):
             raise ValueError("bnb_4bit_compute_dtype must be torch.dtype")
 
         if not isinstance(self.bnb_4bit_quant_type, str):

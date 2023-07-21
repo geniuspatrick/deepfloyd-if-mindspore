@@ -519,7 +519,7 @@ def _load_state_dict_into_model(model_to_load, state_dict, start_prefix):
 
     # PyTorch's `_load_from_state_dict` does not copy parameters in a module's descendants
     # so we need to apply the function recursively.
-    def load(module: nn.Module, state_dict, prefix=""):
+    def load(module: nn.Cell, state_dict, prefix=""):
         local_metadata = {} if metadata is None else metadata.get(prefix[:-1], {})
         args = (state_dict, prefix, local_metadata, True, [], [], error_msgs)
         # Parameters of module and children will start with prefix. We can exit early if there are none in this
@@ -793,7 +793,7 @@ class ModuleUtilsMixin:
             module.mem_rss_pre_forward = 0
 
     @property
-    def device(self) -> torch.device:
+    def device(self):
         """
         `torch.device`: The device on which the module is (assuming that all the module parameters are on the same
         device).
@@ -801,7 +801,7 @@ class ModuleUtilsMixin:
         return get_parameter_device(self)
 
     @property
-    def dtype(self) -> torch.dtype:
+    def dtype(self):
         """
         `torch.dtype`: The dtype of the module (assuming that all the module parameters have the same dtype).
         """
@@ -1023,7 +1023,7 @@ class ModuleUtilsMixin:
         return 6 * self.estimate_tokens(input_dict) * self.num_parameters(exclude_embeddings=exclude_embeddings)
 
 
-class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMixin):
+class PreTrainedModel(nn.Cell, ModuleUtilsMixin, GenerationMixin, PushToHubMixin):
     r"""
     Base class for all models.
 
@@ -1148,7 +1148,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
         return model
 
     @classmethod
-    def _set_default_torch_dtype(cls, dtype: torch.dtype) -> torch.dtype:
+    def _set_default_torch_dtype(cls, dtype: ms.dtype) -> ms.dtype:
         """
         Change the default dtype and return the previous one. This is needed when wanting to instantiate the model
         under specific dtype.
@@ -1175,7 +1175,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
         return dtype_orig
 
     @property
-    def base_model(self) -> nn.Module:
+    def base_model(self) -> nn.Cell:
         """
         `torch.nn.Module`: The main body of the model.
         """
@@ -1210,7 +1210,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
         """
         self._require_grads_hook.remove()
 
-    def get_input_embeddings(self) -> nn.Module:
+    def get_input_embeddings(self) -> nn.Cell:
         """
         Returns the model's input embeddings.
 
@@ -1223,7 +1223,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
         else:
             raise NotImplementedError
 
-    def set_input_embeddings(self, value: nn.Module):
+    def set_input_embeddings(self, value: nn.Cell):
         """
         Set model's input embeddings.
 
@@ -1236,7 +1236,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
         else:
             raise NotImplementedError
 
-    def get_output_embeddings(self) -> nn.Module:
+    def get_output_embeddings(self) -> nn.Cell:
         """
         Returns the model's output embeddings.
 
@@ -1282,7 +1282,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
                 module._tie_weights()
 
     @staticmethod
-    def _tie_encoder_decoder_weights(encoder: nn.Module, decoder: nn.Module, base_model_prefix: str):
+    def _tie_encoder_decoder_weights(encoder: nn.Cell, decoder: nn.Cell, base_model_prefix: str):
         uninitialized_encoder_weights: List[str] = []
         if decoder.__class__ != encoder.__class__:
             logger.info(
@@ -1291,15 +1291,15 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
             )
 
         def tie_encoder_to_decoder_recursively(
-            decoder_pointer: nn.Module,
-            encoder_pointer: nn.Module,
+            decoder_pointer: nn.Cell,
+            encoder_pointer: nn.Cell,
             module_name: str,
             uninitialized_encoder_weights: List[str],
             depth=0,
         ):
-            assert isinstance(decoder_pointer, nn.Module) and isinstance(
-                encoder_pointer, nn.Module
-            ), f"{decoder_pointer} and {encoder_pointer} have to be of type nn.Module"
+            assert isinstance(decoder_pointer, nn.Cell) and isinstance(
+                encoder_pointer, nn.Cell
+            ), f"{decoder_pointer} and {encoder_pointer} have to be of type nn.Cell"
             if hasattr(decoder_pointer, "weight"):
                 assert hasattr(encoder_pointer, "weight")
                 encoder_pointer.weight = decoder_pointer.weight
@@ -1655,7 +1655,7 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
         save_directory: Union[str, os.PathLike],
         is_main_process: bool = True,
         state_dict: Optional[dict] = None,
-        save_function: Callable = torch.save,
+        save_function: Callable = ms.save_checkpoint,
         push_to_hub: bool = False,
         max_shard_size: Union[int, str] = "10GB",
         safe_serialization: bool = False,
@@ -2193,23 +2193,23 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
             )
 
         # change device_map into a map if we passed an int, a str or a torch.device
-        if isinstance(device_map, torch.device):
-            device_map = {"": device_map}
-        elif isinstance(device_map, str) and device_map not in ["auto", "balanced", "balanced_low_0", "sequential"]:
-            try:
-                device_map = {"": torch.device(device_map)}
-            except RuntimeError:
-                raise ValueError(
-                    "When passing device_map as a string, the value needs to be a device name (e.g. cpu, cuda:0) or "
-                    f"'auto', 'balanced', 'balanced_low_0', 'sequential' but found {device_map}."
-                )
-        elif isinstance(device_map, int):
-            if device_map < 0:
-                raise ValueError(
-                    "You can't pass device_map as a negative int. If you want to put the model on the cpu, pass device_map = 'cpu' "
-                )
-            else:
-                device_map = {"": device_map}
+        # if isinstance(device_map, torch.device):
+        #     device_map = {"": device_map}
+        # elif isinstance(device_map, str) and device_map not in ["auto", "balanced", "balanced_low_0", "sequential"]:
+        #     try:
+        #         device_map = {"": torch.device(device_map)}
+        #     except RuntimeError:
+        #         raise ValueError(
+        #             "When passing device_map as a string, the value needs to be a device name (e.g. cpu, cuda:0) or "
+        #             f"'auto', 'balanced', 'balanced_low_0', 'sequential' but found {device_map}."
+        #         )
+        # elif isinstance(device_map, int):
+        #     if device_map < 0:
+        #         raise ValueError(
+        #             "You can't pass device_map as a negative int. If you want to put the model on the cpu, pass device_map = 'cpu' "
+        #         )
+        #     else:
+        #         device_map = {"": device_map}
 
         if device_map is not None:
             if low_cpu_mem_usage is None:

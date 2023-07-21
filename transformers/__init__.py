@@ -22,5 +22,5 @@ __version__ = "4.30.0"
 
 from typing import TYPE_CHECKING
 
-from models.t5.modeling_t5 import T5EncoderModel
-from models.auto.tokenization_auto import AutoTokenizer
+from .models.t5 import T5EncoderModel, T5Config
+from .models.auto import AutoTokenizer

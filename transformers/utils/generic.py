@@ -311,6 +311,7 @@ class TensorType(ExplicitEnum):
     TENSORFLOW = "tf"
     NUMPY = "np"
     JAX = "jax"
+    MINDSPORE = "ms"
 
 
 class ContextManagers:

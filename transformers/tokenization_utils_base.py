@@ -709,6 +709,10 @@ class BatchEncoding(UserDict):
 
             as_tensor = jnp.array
             is_tensor = is_jax_tensor
+        elif tensor_type == TensorType.MINDSPORE:
+            import mindspore as ms
+            as_tensor = ms.Tensor
+            is_tensor = ms.ops.is_tensor
         else:
 
             def as_tensor(value, dtype=None):

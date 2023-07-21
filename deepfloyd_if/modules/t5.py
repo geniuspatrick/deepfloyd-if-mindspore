@@ -16,9 +16,9 @@ class T5Embedder:
     available_models = ['t5-v1_1-xxl']
     bad_punct_regex = re.compile(r'['+'#®•©™&@·º½¾¿¡§~'+'\)'+'\('+'\]'+'\['+'\}'+'\{'+'\|'+'\\'+'\/'+'\*' + r']{1,}')  # noqa
 
-    def __init__(self, device, dir_or_name='t5-v1_1-xxl', *, cache_dir=None, hf_token=None, use_text_preprocessing=True,
+    def __init__(self, dir_or_name='t5-v1_1-xxl', *, cache_dir=None, hf_token=None, use_text_preprocessing=True,
                  t5_model_kwargs=None, torch_dtype=None, use_offload_folder=None):
-        self.device = torch.device(device)
+        self.device = None
         self.torch_dtype = torch_dtype or ms.float16
         if t5_model_kwargs is None:
             t5_model_kwargs = {'low_cpu_mem_usage': True, 'torch_dtype': self.torch_dtype}
@@ -56,6 +56,8 @@ class T5Embedder:
                 }
             else:
                 t5_model_kwargs['device_map'] = {'shared': self.device, 'encoder': self.device}
+            t5_model_kwargs.pop('device_map')  # does not support device_map
+            t5_model_kwargs.pop('low_cpu_mem_usage')  # does not support low_cpu_mem_usage
 
         self.use_text_preprocessing = use_text_preprocessing
         self.hf_token = hf_token
@@ -92,7 +94,7 @@ class T5Embedder:
             truncation=True,
             return_attention_mask=True,
             add_special_tokens=True,
-            return_tensors='pt'
+            return_tensors='ms'
         )
         text_tokens_and_mask['input_ids'] = text_tokens_and_mask['input_ids']
         text_tokens_and_mask['attention_mask'] = text_tokens_and_mask['attention_mask']
