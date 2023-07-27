@@ -109,10 +109,10 @@ class BitsAndBytesConfig:
             self.bnb_4bit_compute_dtype = ms.float32
         elif isinstance(bnb_4bit_compute_dtype, str):
             self.bnb_4bit_compute_dtype = getattr(ms.dtype, bnb_4bit_compute_dtype)
-        elif isinstance(bnb_4bit_compute_dtype, ms.dtype.TensorType):
+        elif isinstance(bnb_4bit_compute_dtype, ms.dtype.Type):
             self.bnb_4bit_compute_dtype = bnb_4bit_compute_dtype
         else:
-            raise ValueError("bnb_4bit_compute_dtype must be a string or a torch.dtype")
+            raise ValueError("bnb_4bit_compute_dtype must be a string or a mindspore.dtype.Type")
 
         self.post_init()
 
@@ -131,8 +131,8 @@ class BitsAndBytesConfig:
         if not isinstance(self.llm_int8_has_fp16_weight, bool):
             raise ValueError("llm_int8_has_fp16_weight must be a boolean")
 
-        if self.bnb_4bit_compute_dtype is not None and not isinstance(self.bnb_4bit_compute_dtype, ms.dtype.TensorType):
-            raise ValueError("bnb_4bit_compute_dtype must be torch.dtype")
+        if self.bnb_4bit_compute_dtype is not None and not isinstance(self.bnb_4bit_compute_dtype, ms.dtype.Type):
+            raise ValueError("bnb_4bit_compute_dtype must be mindspore.dtype.Type")
 
         if not isinstance(self.bnb_4bit_quant_type, str):
             raise ValueError("bnb_4bit_quant_type must be a string")

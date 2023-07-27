@@ -6,6 +6,7 @@ from abc import abstractmethod
 import numpy as np
 import mindspore as ms
 from mindspore import nn, ops
+from transformers.layers import Embedding
 
 from .nn import avg_pool_nd, conv_nd, linear, normalization, timestep_embedding, zero_module, get_activation, \
     AttentionPooling
@@ -444,7 +445,7 @@ class UNetModel(nn.Cell):
         ])
 
         if self.num_classes is not None:
-            self.label_emb = nn.Embedding(num_classes, self.time_embed_dim)
+            self.label_emb = Embedding(num_classes, self.time_embed_dim)
 
         ch = input_ch = int(self.channel_mult[0] * model_channels)
         self.input_blocks = nn.CellList(

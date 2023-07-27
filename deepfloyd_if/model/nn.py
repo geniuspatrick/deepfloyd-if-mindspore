@@ -60,7 +60,7 @@ class AttentionPooling(nn.Cell):
         self.dim_per_head = embed_dim // self.num_heads
 
     def construct(self, x):
-        bs, length, width = x.size()
+        bs, length, width = x.shape
 
         def shape(x):
             # (bs, length, width) --> (bs, length, n_heads, dim_per_head)
@@ -73,7 +73,7 @@ class AttentionPooling(nn.Cell):
             x = x.transpose((0, 2, 1))
             return x
 
-        class_token = x.mean(dim=1, keepdim=True) + self.positional_embedding.to(x.dtype)
+        class_token = x.mean(dim=1, keep_dims=True) + self.positional_embedding.to(x.dtype)
         x = ops.cat([class_token, x], axis=1)  # (bs, length+1, width)
 
         # (bs*n_heads, class_token_length, dim_per_head)

@@ -82,7 +82,16 @@ class T5Embedder:
             tokenizer_path = cache_dir
 
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
-        self.model = T5EncoderModel.from_pretrained(path, **t5_model_kwargs).eval()
+        self.model = T5EncoderModel.from_pretrained(path, **t5_model_kwargs).set_train(False)
+        # T5Stack(
+        #     Embedding,
+        #     24 x T5Block(
+        #         T5LayerSelfAttention(T5Attention, T5LayerNorm, Dropout),
+        #         T5LayerFF(T5DenseGatedActDense, T5LayerNorm, Dropout)
+        #     ),
+        #     T5LayerNorm,
+        #     Dropout
+        # )
 
     def get_text_embeddings(self, texts):
         texts = [self.text_preprocessing(text) for text in texts]
@@ -102,8 +111,8 @@ class T5Embedder:
         # with torch.no_grad():
         # todo: can we safely remove no_grad?
         text_encoder_embs = self.model(
-            input_ids=text_tokens_and_mask['input_ids'].to(self.device),
-            attention_mask=text_tokens_and_mask['attention_mask'].to(self.device),
+            input_ids=text_tokens_and_mask['input_ids'],
+            attention_mask=text_tokens_and_mask['attention_mask'],
         )['last_hidden_state']
         text_encoder_embs = ops.stop_gradient(text_encoder_embs)
 

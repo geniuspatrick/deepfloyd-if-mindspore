@@ -22,10 +22,12 @@ import warnings
 from typing import Optional, Tuple, Union
 
 import mindspore as ms
+import mindspore.common.initializer as init
 from mindspore import nn, ops
 from mindspore.nn import CrossEntropyLoss
 
 from ...activations import ACT2FN
+from ...layers import Embedding, finfo
 from ...modeling_outputs import (
     BaseModelOutput,
     BaseModelOutputWithPastAndCrossAttentions,
@@ -249,7 +251,7 @@ class T5LayerNorm(nn.Cell):
         # w/o mean and there is no bias. Additionally we want to make sure that the accumulation for
         # half-precision inputs is done in fp32
 
-        variance = hidden_states.to(ms.float32).pow(2).mean(-1, keepdim=True)
+        variance = hidden_states.to(ms.float32).pow(2).mean(-1, keep_dims=True)
         hidden_states = hidden_states * ops.rsqrt(variance + self.variance_epsilon)
 
         # convert into half-precision if necessary
@@ -280,7 +282,7 @@ class T5DenseActDense(nn.Cell):
         super().__init__()
         self.wi = nn.Dense(config.d_model, config.d_ff, has_bias=False)
         self.wo = nn.Dense(config.d_ff, config.d_model, has_bias=False)
-        self.dropout = nn.Dropout(config.dropout_rate)
+        self.dropout = nn.Dropout(p=config.dropout_rate)
         self.act = ACT2FN[config.dense_act_fn]
 
     def construct(self, hidden_states):
@@ -303,7 +305,7 @@ class T5DenseGatedActDense(nn.Cell):
         self.wi_0 = nn.Dense(config.d_model, config.d_ff, has_bias=False)
         self.wi_1 = nn.Dense(config.d_model, config.d_ff, has_bias=False)
         self.wo = nn.Dense(config.d_ff, config.d_model, has_bias=False)
-        self.dropout = nn.Dropout(config.dropout_rate)
+        self.dropout = nn.Dropout(p=config.dropout_rate)
         self.act = ACT2FN[config.dense_act_fn]
 
     def construct(self, hidden_states):
@@ -335,7 +337,7 @@ class T5LayerFF(nn.Cell):
             self.DenseReluDense = T5DenseActDense(config)
 
         self.layer_norm = T5LayerNorm(config.d_model, eps=config.layer_norm_epsilon)
-        self.dropout = nn.Dropout(config.dropout_rate)
+        self.dropout = nn.Dropout(p=config.dropout_rate)
 
     def construct(self, hidden_states):
         forwarded_states = self.layer_norm(hidden_states)
@@ -361,10 +363,10 @@ class T5Attention(nn.Cell):
         self.q = nn.Dense(self.d_model, self.inner_dim, has_bias=False)
         self.k = nn.Dense(self.d_model, self.inner_dim, has_bias=False)
         self.v = nn.Dense(self.d_model, self.inner_dim, has_bias=False)
-        self.o = nn.Dense(self.inner_dim, self.d_model, hsa_bias=False)
+        self.o = nn.Dense(self.inner_dim, self.d_model, has_bias=False)
 
         if self.has_relative_attention_bias:
-            self.relative_attention_bias = nn.Embedding(self.relative_attention_num_buckets, self.n_heads)
+            self.relative_attention_bias = Embedding(self.relative_attention_num_buckets, self.n_heads)
         self.pruned_heads = set()
         self.gradient_checkpointing = False
 
@@ -412,7 +414,7 @@ class T5Attention(nn.Cell):
             relative_buckets += (relative_position > 0).to(ms.int64) * num_buckets
             relative_position = ops.abs(relative_position)
         else:
-            relative_position = -ops.min(relative_position, ops.zeros_like(relative_position))
+            relative_position = -ops.minimum(relative_position, ops.zeros_like(relative_position))
         # now relative_position is in the range [0, inf)
 
         # half of the buckets are for exact increments in positions
@@ -425,7 +427,7 @@ class T5Attention(nn.Cell):
             / math.log(max_distance / max_exact)
             * (num_buckets - max_exact)
         ).to(ms.int64)
-        relative_position_if_large = ops.min(
+        relative_position_if_large = ops.minimum(
             relative_position_if_large, ops.full_like(relative_position_if_large, num_buckets - 1)
         )
 
@@ -434,8 +436,6 @@ class T5Attention(nn.Cell):
 
     def compute_bias(self, query_length, key_length, device=None):
         """Compute binned relative position bias"""
-        if device is None:
-            device = self.relative_attention_bias.weight.device
         context_position = ops.arange(query_length, dtype=ms.int64)[:, None]
         memory_position = ops.arange(key_length, dtype=ms.int64)[None, :]
         relative_position = memory_position - context_position  # shape (query_length, key_length)
@@ -482,11 +482,11 @@ class T5Attention(nn.Cell):
 
         def shape(states):
             """projection"""
-            return states.view(batch_size, -1, self.n_heads, self.key_value_proj_dim).transpose(1, 2)
+            return states.view(batch_size, -1, self.n_heads, self.key_value_proj_dim).transpose(0, 2, 1, 3)
 
         def unshape(states):
             """reshape"""
-            return states.transpose(1, 2).contiguous().view(batch_size, -1, self.inner_dim)
+            return states.transpose(0, 2, 1, 3).view(batch_size, -1, self.inner_dim)
 
         def project(hidden_states, proj_layer, key_value_states, past_key_value):
             """projects hidden states correctly to key/query states"""
@@ -528,7 +528,7 @@ class T5Attention(nn.Cell):
 
         # compute scores
         scores = ops.matmul(
-            query_states, key_states.transpose(3, 2)
+            query_states, key_states.transpose(0, 1, 3, 2)
         )  # equivalent of torch.einsum("bnqd,bnkd->bnqk", query_states, key_states), compatible with onnx op>9
 
         if position_bias is None:
@@ -539,7 +539,7 @@ class T5Attention(nn.Cell):
                 if self.gradient_checkpointing and self.training:
                     position_bias.requires_grad = True
             else:
-                position_bias = self.compute_bias(real_seq_length, key_length, device=scores.device)
+                position_bias = self.compute_bias(real_seq_length, key_length)
 
             # if key and values are already calculated
             # we want only the last query position bias
@@ -557,8 +557,8 @@ class T5Attention(nn.Cell):
             position_bias_masked = position_bias
 
         scores += position_bias_masked
-        attn_weights = ops.softmax(scores.float(), axis=-1).type_as(
-            scores
+        attn_weights = ops.softmax(scores.float(), axis=-1).to(
+            scores.dtype
         )  # (batch_size, n_heads, seq_length, key_length)
         attn_weights = ops.dropout(
             attn_weights, p=self.dropout, training=self.training
@@ -584,7 +584,7 @@ class T5LayerSelfAttention(nn.Cell):
         super().__init__()
         self.SelfAttention = T5Attention(config, has_relative_attention_bias=has_relative_attention_bias)
         self.layer_norm = T5LayerNorm(config.d_model, eps=config.layer_norm_epsilon)
-        self.dropout = nn.Dropout(config.dropout_rate)
+        self.dropout = nn.Dropout(p=config.dropout_rate)
 
     def construct(
         self,
@@ -616,7 +616,7 @@ class T5LayerCrossAttention(nn.Cell):
         super().__init__()
         self.EncDecAttention = T5Attention(config, has_relative_attention_bias=False)
         self.layer_norm = T5LayerNorm(config.d_model, eps=config.layer_norm_epsilon)
-        self.dropout = nn.Dropout(config.dropout_rate)
+        self.dropout = nn.Dropout(p=config.dropout_rate)
 
     def construct(
         self,
@@ -651,12 +651,12 @@ class T5Block(nn.Cell):
     def __init__(self, config, has_relative_attention_bias=False):
         super().__init__()
         self.is_decoder = config.is_decoder
-        self.layer = nn.CellList()  # todo: CellList.append may cause bug!
-        self.layer.append(T5LayerSelfAttention(config, has_relative_attention_bias=has_relative_attention_bias))
+        layer = [T5LayerSelfAttention(config, has_relative_attention_bias=has_relative_attention_bias)]
         if self.is_decoder:
-            self.layer.append(T5LayerCrossAttention(config))
+            layer.append(T5LayerCrossAttention(config))
 
-        self.layer.append(T5LayerFF(config))
+        layer.append(T5LayerFF(config))
+        self.layer = nn.CellList(layer)
 
     def construct(
         self,
@@ -706,8 +706,8 @@ class T5Block(nn.Cell):
         if hidden_states.dtype == ms.float16:
             clamp_value = ops.where(
                 ops.isinf(hidden_states).any(),
-                ops.finfo(hidden_states.dtype).max - 1000,
-                ops.finfo(hidden_states.dtype).max,
+                finfo(hidden_states.dtype).max - 1000,
+                finfo(hidden_states.dtype).max,
             )
             hidden_states = ops.clamp(hidden_states, min=-clamp_value, max=clamp_value)
 
@@ -737,8 +737,8 @@ class T5Block(nn.Cell):
             if hidden_states.dtype == ms.float16:
                 clamp_value = ops.where(
                     ops.isinf(hidden_states).any(),
-                    ops.finfo(hidden_states.dtype).max - 1000,
-                    ops.finfo(hidden_states.dtype).max,
+                    finfo(hidden_states.dtype).max - 1000,
+                    finfo(hidden_states.dtype).max,
                 )
                 hidden_states = ops.clamp(hidden_states, min=-clamp_value, max=clamp_value)
 
@@ -756,8 +756,8 @@ class T5Block(nn.Cell):
         if hidden_states.dtype == ms.float16:
             clamp_value = ops.where(
                 ops.isinf(hidden_states).any(),
-                ops.finfo(hidden_states.dtype).max - 1000,
-                ops.finfo(hidden_states.dtype).max,
+                finfo(hidden_states.dtype).max - 1000,
+                finfo(hidden_states.dtype).max,
             )
             hidden_states = ops.clamp(hidden_states, min=-clamp_value, max=clamp_value)
 
@@ -800,48 +800,82 @@ class T5PreTrainedModel(PreTrainedModel):
         """Initialize the weights"""
         factor = self.config.initializer_factor  # Used for testing weights initialization
         if isinstance(module, T5LayerNorm):
-            module.weight.data.fill_(factor * 1.0)
+            module.weight.set_data(
+                init.initializer(init.Constant(factor * 1.0), module.weight.shape, module.weight.dtype))
         elif isinstance(module, (T5Model, T5ForConditionalGeneration, T5EncoderModel, T5ForQuestionAnswering)):
             # Mesh TensorFlow embeddings initialization
             # See https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L1624
-            module.shared.weight.data.normal_(mean=0.0, std=factor * 1.0)
+            module.shared.weight.set_data(
+                init.initializer(init.Normal(sigma=factor * 1.0, mean=0.0),
+                                 module.shared.weight.shape, module.shared.weight.dtype))
             if hasattr(module, "lm_head") and not self.config.tie_word_embeddings:
-                module.lm_head.weight.data.normal_(mean=0.0, std=factor * 1.0)
+                module.lm_head.weight.set_data(
+                    init.initializer(init.Normal(sigma=factor * 1.0, mean=0.0),
+                                     module.lm_head.weight.shape, module.lm_head.weight.dtype))
             if hasattr(module, "qa_outputs"):
-                module.qa_outputs.weight.data.normal_(mean=0.0, std=factor * ((self.config.d_model) ** -0.5))
-                module.qa_outputs.bias.data.zero_()
+                module.qa_outputs.weight.set_data(
+                    init.initializer(init.Normal(sigma=factor * ((self.config.d_model) ** -0.5), mean=0.0),
+                                     module.qa_outputs.weight.shape, module.qa_outputs.weight.dtype))
+                module.qa_outputs.bias.set_data(
+                    init.initializer(init.Zero(), module.qa_outputs.bias.shape, module.qa_outputs.bias.dtype))
         elif isinstance(module, T5DenseActDense):
             # Mesh TensorFlow FF initialization
             # See https://github.com/tensorflow/mesh/blob/master/mesh_tensorflow/transformer/transformer_layers.py#L56
             # and https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L89
-            module.wi.weight.data.normal_(mean=0.0, std=factor * ((self.config.d_model) ** -0.5))
+            module.wi.weight.set_data(
+                init.initializer(init.Normal(sigma=factor * ((self.config.d_model) ** -0.5), mean=0.0),
+                                 module.wi.weight.shape, module.wi.weight.dtype))
             if hasattr(module.wi, "bias") and module.wi.bias is not None:
-                module.wi.bias.data.zero_()
-            module.wo.weight.data.normal_(mean=0.0, std=factor * ((self.config.d_ff) ** -0.5))
+                module.wi.bias.set_data(
+                    init.initializer(init.Zero(), module.wi.bias.shape, module.wi.bias.dtype))
+            module.wo.weight.set_data(
+                init.initializer(init.Normal(sigma=factor * ((self.config.d_ff) ** -0.5), mean=0.0),
+                                 module.wo.weight.shape, module.wo.weight.dtype))
             if hasattr(module.wo, "bias") and module.wo.bias is not None:
-                module.wo.bias.data.zero_()
+                module.wo.bias.set_data(
+                    init.initializer(init.Zero(), module.wo.bias.shape, module.wo.bias.dtype))
         elif isinstance(module, T5DenseGatedActDense):
-            module.wi_0.weight.data.normal_(mean=0.0, std=factor * ((self.config.d_model) ** -0.5))
+            module.wi_0.weight.set_data(
+                init.initializer(init.Normal(sigma=factor * ((self.config.d_model) ** -0.5), mean=0.0),
+                                 module.wi_0.weight.shape, module.wi_0.weight.dtype))
             if hasattr(module.wi_0, "bias") and module.wi_0.bias is not None:
-                module.wi_0.bias.data.zero_()
-            module.wi_1.weight.data.normal_(mean=0.0, std=factor * ((self.config.d_model) ** -0.5))
+                module.wi_0.bias.set_data(
+                    init.initializer(init.Zero(), module.wi_0.bias.shape, module.wi_0.bias.dtype))
+            module.wi_1.weight.set_data(
+                init.initializer(init.Normal(sigma=factor * ((self.config.d_model) ** -0.5), mean=0.0),
+                                 module.wi_1.weight.shape, module.wi_1.weight.dtype))
             if hasattr(module.wi_1, "bias") and module.wi_1.bias is not None:
-                module.wi_1.bias.data.zero_()
-            module.wo.weight.data.normal_(mean=0.0, std=factor * ((self.config.d_ff) ** -0.5))
+                module.wi_1.bias.set_data(
+                    init.initializer(init.Zero(), module.wi_1.bias.shape, module.wi_1.bias.dtype))
+            module.wo.weight.set_data(
+                init.initializer(init.Normal(sigma=factor * ((self.config.d_ff) ** -0.5), mean=0.0),
+                                 module.wo.weight.shape, module.wo.weight.dtype))
             if hasattr(module.wo, "bias") and module.wo.bias is not None:
-                module.wo.bias.data.zero_()
+                module.wo.bias.set_data(
+                    init.initializer(init.Zero(), module.wo.bias.shape, module.wo.bias.dtype))
         elif isinstance(module, T5Attention):
             # Mesh TensorFlow attention initialization to avoid scaling before softmax
             # See https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/transformer/attention.py#L136
             d_model = self.config.d_model
             key_value_proj_dim = self.config.d_kv
             n_heads = self.config.num_heads
-            module.q.weight.data.normal_(mean=0.0, std=factor * ((d_model * key_value_proj_dim) ** -0.5))
-            module.k.weight.data.normal_(mean=0.0, std=factor * (d_model**-0.5))
-            module.v.weight.data.normal_(mean=0.0, std=factor * (d_model**-0.5))
-            module.o.weight.data.normal_(mean=0.0, std=factor * ((n_heads * key_value_proj_dim) ** -0.5))
+            module.q.weight.set_data(
+                init.initializer(init.Normal(sigma=factor * ((d_model * key_value_proj_dim) ** -0.5), mean=0.0),
+                                 module.q.weight.shape, module.q.weight.dtype))
+            module.k.weight.set_data(
+                init.initializer(init.Normal(sigma=factor * (d_model**-0.5), mean=0.0),
+                                 module.k.weight.shape, module.k.weight.dtype))
+            module.v.weight.set_data(
+                init.initializer(init.Normal(sigma=factor * (d_model**-0.5), mean=0.0),
+                                 module.v.weight.shape, module.v.weight.dtype))
+            module.o.weight.set_data(
+                init.initializer(init.Normal(sigma=factor * ((n_heads * key_value_proj_dim) ** -0.5), mean=0.0),
+                                 module.o.weight.shape, module.o.weight.dtype))
             if module.has_relative_attention_bias:
-                module.relative_attention_bias.weight.data.normal_(mean=0.0, std=factor * ((d_model) ** -0.5))
+                module.relative_attention_bias.weight.set_data(
+                    init.initializer(init.Normal(sigma=factor * ((d_model) ** -0.5), mean=0.0),
+                                     module.relative_attention_bias.weight.shape,
+                                     module.relative_attention_bias.weight.dtype))
 
     def _set_gradient_checkpointing(self, module, value=False):
         if isinstance(module, (T5Attention, T5Stack)):
@@ -886,7 +920,7 @@ class T5Stack(T5PreTrainedModel):
             [T5Block(config, has_relative_attention_bias=bool(i == 0)) for i in range(config.num_layers)]
         )
         self.final_layer_norm = T5LayerNorm(config.d_model, eps=config.layer_norm_epsilon)
-        self.dropout = nn.Dropout(config.dropout_rate)
+        self.dropout = nn.Dropout(p=config.dropout_rate)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -977,10 +1011,10 @@ class T5Stack(T5PreTrainedModel):
                 f"You cannot specify both {err_msg_prefix}input_ids and {err_msg_prefix}inputs_embeds at the same time"
             )
         elif input_ids is not None:
-            input_shape = input_ids.size()
+            input_shape = input_ids.shape
             input_ids = input_ids.view(-1, input_shape[-1])
         elif inputs_embeds is not None:
-            input_shape = inputs_embeds.size()[:-1]
+            input_shape = inputs_embeds.shape[:-1]
         else:
             err_msg_prefix = "decoder_" if self.is_decoder else ""
             raise ValueError(f"You have to specify either {err_msg_prefix}input_ids or {err_msg_prefix}inputs_embeds")
@@ -1013,12 +1047,12 @@ class T5Stack(T5PreTrainedModel):
 
         # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
         # ourselves in which case we just need to make it broadcastable to all heads.
-        extended_attention_mask = self.get_extended_attention_mask(attention_mask, input_shape)
+        extended_attention_mask = self.get_extended_attention_mask(attention_mask, input_shape, dtype=ms.float32)
 
         # If a 2D or 3D attention mask is provided for the cross-attention
         # we need to make broadcastable to [batch_size, num_heads, seq_length, seq_length]
         if self.is_decoder and encoder_hidden_states is not None:
-            encoder_batch_size, encoder_sequence_length, _ = encoder_hidden_states.size()
+            encoder_batch_size, encoder_sequence_length, _ = encoder_hidden_states.shape
             encoder_hidden_shape = (encoder_batch_size, encoder_sequence_length)
             if encoder_attention_mask is None:
                 encoder_attention_mask = ops.ones(encoder_hidden_shape)
@@ -1333,7 +1367,7 @@ class T5Model(T5PreTrainedModel):
 
     def __init__(self, config: T5Config):
         super().__init__(config)
-        self.shared = nn.Embedding(config.vocab_size, config.d_model)
+        self.shared = Embedding(config.vocab_size, config.d_model)
 
         encoder_config = copy.deepcopy(config)
         encoder_config.is_decoder = False
@@ -1535,7 +1569,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         super().__init__(config)
         self.model_dim = config.d_model
 
-        self.shared = nn.Embedding(config.vocab_size, config.d_model)
+        self.shared = Embedding(config.vocab_size, config.d_model)
 
         encoder_config = copy.deepcopy(config)
         encoder_config.is_decoder = False
@@ -1549,7 +1583,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         decoder_config.num_layers = config.num_decoder_layers
         self.decoder = T5Stack(decoder_config, self.shared)
 
-        self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
+        self.lm_head = nn.Dense(config.d_model, config.vocab_size, has_bias=False)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1840,7 +1874,7 @@ class T5EncoderModel(T5PreTrainedModel):
 
     def __init__(self, config: T5Config):
         super().__init__(config)
-        self.shared = nn.Embedding(config.vocab_size, config.d_model)
+        self.shared = Embedding(config.vocab_size, config.d_model)
 
         encoder_config = copy.deepcopy(config)
         encoder_config.use_cache = False
@@ -1960,7 +1994,7 @@ class T5ForQuestionAnswering(T5PreTrainedModel):
         super().__init__(config)
         self.model_dim = config.d_model
 
-        self.shared = nn.Embedding(config.vocab_size, config.d_model)
+        self.shared = Embedding(config.vocab_size, config.d_model)
 
         encoder_config = copy.deepcopy(config)
         encoder_config.is_decoder = False
@@ -1975,7 +2009,7 @@ class T5ForQuestionAnswering(T5PreTrainedModel):
         self.decoder = T5Stack(decoder_config, self.shared)
 
         self.num_labels = config.num_labels
-        self.qa_outputs = nn.Linear(config.hidden_size, config.num_labels)
+        self.qa_outputs = nn.Dense(config.hidden_size, config.num_labels)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -2100,9 +2134,9 @@ class T5ForQuestionAnswering(T5PreTrainedModel):
         total_loss = None
         if start_positions is not None and end_positions is not None:
             # If we are on multi-GPU, split add a dimension
-            if len(start_positions.size()) > 1:
+            if len(start_positions.shape) > 1:
                 start_positions = start_positions.squeeze(-1).to(start_logits.device)
-            if len(end_positions.size()) > 1:
+            if len(end_positions.shape) > 1:
                 end_positions = end_positions.squeeze(-1).to(end_logits.device)
             # sometimes the start/end positions are outside our model inputs, we ignore these terms
             ignored_index = start_logits.size(1)

@@ -56,7 +56,7 @@ def prune_linear_layer(layer: nn.Dense, index: ms.Tensor, dim: int = 0) -> nn.De
             b = layer.bias.clone().detach()
         else:
             b = layer.bias[index].clone().detach()
-    new_size = list(layer.weight.size())
+    new_size = list(layer.weight.shape)
     new_size[dim] = len(index)
     new_layer = nn.Dense(new_size[1], new_size[0], bias=layer.bias is not None).to(layer.weight.device)
     new_layer.weight.requires_grad = False
@@ -88,7 +88,7 @@ class Conv1D(nn.Cell):
         self.weight.set_data(init.initializer(init.Normal(sigma=0.02), self.weight.shape, self.weight.dtype))
 
     def construct(self, x):
-        size_out = x.size()[:-1] + (self.nf,)
+        size_out = x.shape[:-1] + (self.nf,)
         x = ops.addmm(self.bias, x.view(-1, x.size(-1)), self.weight)
         x = x.view(size_out)
         return x
@@ -115,7 +115,7 @@ def prune_conv1d_layer(layer: Conv1D, index: ms.Tensor, dim: int = 1) -> Conv1D:
         b = layer.bias.clone().detach()
     else:
         b = layer.bias[index].clone().detach()
-    new_size = list(layer.weight.size())
+    new_size = list(layer.weight.shape)
     new_size[dim] = len(index)
     new_layer = Conv1D(new_size[1], new_size[0]).to(layer.weight.device)
     new_layer.weight.requires_grad = False

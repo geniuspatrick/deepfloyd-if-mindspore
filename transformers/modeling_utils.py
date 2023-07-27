@@ -27,11 +27,13 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+import numpy as np
 from packaging import version
 import mindspore as ms
 from mindspore import Tensor, ops, nn
 
 from .activations import get_activation
+from .layers import Embedding, finfo
 from .configuration_utils import PretrainedConfig
 from .deepspeed import deepspeed_config, is_deepspeed_zero3_enabled
 from .dynamic_module_utils import custom_object_save
@@ -459,7 +461,11 @@ def load_state_dict(checkpoint_file: Union[str, os.PathLike]):
             )
         return safe_load_file(checkpoint_file)
     try:
-        return ms.load(checkpoint_file, map_location="cpu")
+        checkpoint_file_np = f"{os.path.splitext(checkpoint_file)[0]}.npy"
+        if not os.path.exists(checkpoint_file_np):
+            raise FileNotFoundError(f"You need to manually transfer {checkpoint_file} to {checkpoint_file_np}")
+        state_dict = np.load(checkpoint_file_np, allow_pickle=True).item()
+        return {k: ms.Parameter(ms.Tensor(v), name=k) for k, v in state_dict.items()}
     except Exception as e:
         try:
             with open(checkpoint_file) as f:
@@ -487,9 +493,9 @@ def set_initialized_submodules(model, state_dict_keys):
     Sets the `_is_hf_initialized` flag in all submodules of a given model when all its weights are in the loaded state
     dict.
     """
-    for module_name, module in model.named_modules():
+    for module_name, module in model.cells_and_names():
         loaded_keys = [k.replace(f"{module_name}.", "") for k in state_dict_keys if k.startswith(f"{module_name}.")]
-        if len(set(module.state_dict().keys()) - set(loaded_keys)) == 0:
+        if len(set(module.parameters_dict().keys()) - set(loaded_keys)) == 0:
             module._is_hf_initialized = True
 
 
@@ -546,7 +552,9 @@ def _load_state_dict_into_model(model_to_load, state_dict, start_prefix):
             if child is not None:
                 load(child, state_dict, prefix + name + ".")
 
-    load(model_to_load, state_dict, prefix=start_prefix)
+    # load(model_to_load, state_dict, prefix=start_prefix)
+    param_not_load, ckpt_not_load = ms.load_param_into_net(model_to_load, state_dict)
+    logger.warning(f"{ckpt_not_load} in checkpoint is not loaded!")
     # Delete `state_dict` so it could be collected by GC earlier. Note that `state_dict` is a copy of the argument, so
     # it's safe to delete it.
     del state_dict
@@ -827,7 +835,7 @@ class ModuleUtilsMixin:
         # encoder_extended_attention_mask = (encoder_extended_attention_mask ==
         # encoder_extended_attention_mask.transpose(-1, -2))
         encoder_extended_attention_mask = encoder_extended_attention_mask.to(dtype=self.dtype)  # fp16 compatibility
-        encoder_extended_attention_mask = (1.0 - encoder_extended_attention_mask) * torch.finfo(self.dtype).min
+        encoder_extended_attention_mask = (1.0 - encoder_extended_attention_mask) * finfo(self.dtype).min
 
         return encoder_extended_attention_mask
 
@@ -908,7 +916,7 @@ class ModuleUtilsMixin:
         # Since we are adding it to the raw scores before the softmax, this is
         # effectively the same as removing these entirely.
         extended_attention_mask = extended_attention_mask.to(dtype=dtype)  # fp16 compatibility
-        extended_attention_mask = (1.0 - extended_attention_mask) * torch.finfo(dtype).min
+        extended_attention_mask = (1.0 - extended_attention_mask) * finfo(dtype).min
         return extended_attention_mask
 
     def get_head_mask(
@@ -966,7 +974,7 @@ class ModuleUtilsMixin:
 
         if exclude_embeddings:
             embedding_param_names = [
-                f"{name}.weight" for name, module_type in self.named_modules() if isinstance(module_type, nn.Embedding)
+                f"{name}.weight" for name, module_type in self.named_modules() if isinstance(module_type, Embedding)
             ]
             non_embedding_parameters = [
                 parameter for name, parameter in self.named_parameters() if name not in embedding_param_names
@@ -1164,15 +1172,17 @@ class PreTrainedModel(nn.Cell, ModuleUtilsMixin, GenerationMixin, PushToHubMixin
         Note `set_default_dtype` currently only works with floating-point types and asserts if for example,
         `torch.int64` is passed. So if a non-float `dtype` is passed this functions will throw an exception.
         """
-        if not dtype.is_floating_point:
-            raise ValueError(
-                f"Can't instantiate {cls.__name__} model under dtype={dtype} since it is not a floating point dtype"
-            )
-
-        logger.info(f"Instantiating {cls.__name__} model under default dtype {dtype}.")
-        dtype_orig = torch.get_default_dtype()
-        torch.set_default_dtype(dtype)
-        return dtype_orig
+        # if not dtype.is_floating_point:
+        #     raise ValueError(
+        #         f"Can't instantiate {cls.__name__} model under dtype={dtype} since it is not a floating point dtype"
+        #     )
+        #
+        # logger.info(f"Instantiating {cls.__name__} model under default dtype {dtype}.")
+        # dtype_orig = torch.get_default_dtype()
+        # torch.set_default_dtype(dtype)
+        # return dtype_orig
+        logger.warning(f"set_default_dtype to {dtype} is not supported for now!")
+        return ms.float32
 
     @property
     def base_model(self) -> nn.Cell:
@@ -1277,7 +1287,7 @@ class PreTrainedModel(nn.Cell, ModuleUtilsMixin, GenerationMixin, PushToHubMixin
                 self = getattr(self, self.base_model_prefix)
             self._tie_encoder_decoder_weights(self.encoder, self.decoder, self.base_model_prefix)
 
-        for module in self.modules():
+        for module in self.cells():
             if hasattr(module, "_tie_weights"):
                 module._tie_weights()
 
@@ -1376,7 +1386,7 @@ class PreTrainedModel(nn.Cell, ModuleUtilsMixin, GenerationMixin, PushToHubMixin
         if hasattr(output_embeddings, "out_features") and hasattr(input_embeddings, "num_embeddings"):
             output_embeddings.out_features = input_embeddings.num_embeddings
 
-    def resize_token_embeddings(self, new_num_tokens: Optional[int] = None) -> nn.Embedding:
+    def resize_token_embeddings(self, new_num_tokens: Optional[int] = None) -> Embedding:
         """
         Resizes input token embeddings matrix of the model if `new_num_tokens != config.vocab_size`.
 
@@ -1418,8 +1428,8 @@ class PreTrainedModel(nn.Cell, ModuleUtilsMixin, GenerationMixin, PushToHubMixin
         return self.get_input_embeddings()
 
     def _get_resized_embeddings(
-        self, old_embeddings: nn.Embedding, new_num_tokens: Optional[int] = None
-    ) -> nn.Embedding:
+        self, old_embeddings: Embedding, new_num_tokens: Optional[int] = None
+    ) -> Embedding:
         """
         Build a resized Embedding Module from a provided token Embedding Module. Increasing the size will add newly
         initialized vectors at the end. Reducing the size will remove vectors from the end
@@ -1445,22 +1455,22 @@ class PreTrainedModel(nn.Cell, ModuleUtilsMixin, GenerationMixin, PushToHubMixin
             import deepspeed
 
             with deepspeed.zero.GatheredParameters(old_embeddings.weight, modifier_rank=None):
-                old_num_tokens, old_embedding_dim = old_embeddings.weight.size()
+                old_num_tokens, old_embedding_dim = old_embeddings.weight.shape
         else:
-            old_num_tokens, old_embedding_dim = old_embeddings.weight.size()
+            old_num_tokens, old_embedding_dim = old_embeddings.weight.shape
 
         if old_num_tokens == new_num_tokens:
             return old_embeddings
 
-        if not isinstance(old_embeddings, nn.Embedding):
+        if not isinstance(old_embeddings, Embedding):
             raise TypeError(
-                f"Old embeddings are of type {type(old_embeddings)}, which is not an instance of {nn.Embedding}. You"
+                f"Old embeddings are of type {type(old_embeddings)}, which is not an instance of {Embedding}. You"
                 " should either use a different resize function or make sure that `old_embeddings` are an instance of"
-                f" {nn.Embedding}."
+                f" {Embedding}."
             )
 
         # Build new embeddings
-        new_embeddings = nn.Embedding(new_num_tokens, old_embedding_dim)
+        new_embeddings = Embedding(new_num_tokens, old_embedding_dim)
         new_embeddings.to(old_embeddings.weight.device, dtype=old_embeddings.weight.dtype)
 
         # initialize all new embeddings (in particular added tokens)
@@ -1497,7 +1507,7 @@ class PreTrainedModel(nn.Cell, ModuleUtilsMixin, GenerationMixin, PushToHubMixin
                 Increasing the size will add newly initialized vectors at the end. Reducing the size will remove
                 vectors from the end. If not provided or `None`, just returns a pointer to the input tokens
                 `torch.nn.Linear` module of the model without doing anything. transposed (`bool`, *optional*, defaults
-                to `False`): Whether `old_lm_head` is transposed or not. If True `old_lm_head.size()` is `lm_head_dim,
+                to `False`): Whether `old_lm_head` is transposed or not. If True `old_lm_head.shape` is `lm_head_dim,
                 vocab_size` else `vocab_size, lm_head_dim`.
 
         Return:
@@ -1512,11 +1522,11 @@ class PreTrainedModel(nn.Cell, ModuleUtilsMixin, GenerationMixin, PushToHubMixin
 
             with deepspeed.zero.GatheredParameters(old_lm_head.weight, modifier_rank=None):
                 old_num_tokens, old_lm_head_dim = (
-                    old_lm_head.weight.size() if not transposed else old_lm_head.weight.t().size()
+                    old_lm_head.weight.shape if not transposed else old_lm_head.weight.t().shape
                 )
         else:
             old_num_tokens, old_lm_head_dim = (
-                old_lm_head.weight.size() if not transposed else old_lm_head.weight.t().size()
+                old_lm_head.weight.shape if not transposed else old_lm_head.weight.t().shape
             )
 
         if old_num_tokens == new_num_tokens:
@@ -1579,7 +1589,7 @@ class PreTrainedModel(nn.Cell, ModuleUtilsMixin, GenerationMixin, PushToHubMixin
             f"overwrite this method in the class {self.__class__} in `modeling_{self.__class__.__module__}.py`"
         )
 
-    def get_position_embeddings(self) -> Union[nn.Embedding, Tuple[nn.Embedding]]:
+    def get_position_embeddings(self) -> Union[Embedding, Tuple[Embedding]]:
         raise NotImplementedError(
             f"`get_position_embeddings` is not implemented for {self.__class__}`. To implement it, you should "
             f"overwrite this method in the class {self.__class__} in `modeling_{self.__class__.__module__}.py`"
@@ -2638,12 +2648,12 @@ class PreTrainedModel(nn.Cell, ModuleUtilsMixin, GenerationMixin, PushToHubMixin
             use_keep_in_fp32_modules = (
                 (cls._keep_in_fp32_modules is not None)
                 and is_accelerate_available()
-                and (torch_dtype == torch.float16 or load_in_4bit or load_in_8bit)
+                and (torch_dtype == ms.float16 or load_in_4bit or load_in_8bit)
             )
             if (
                 (cls._keep_in_fp32_modules is not None)
                 and not is_accelerate_available()
-                and torch_dtype == torch.float16
+                and torch_dtype == ms.float16
             ):
                 logger.warning(
                     "For stability purposes, it is recommended to have accelerate installed when using this model in"
@@ -2867,8 +2877,8 @@ class PreTrainedModel(nn.Cell, ModuleUtilsMixin, GenerationMixin, PushToHubMixin
                 raise
         elif from_pt:
             # restore default dtype
-            if dtype_orig is not None:
-                torch.set_default_dtype(dtype_orig)
+            # if dtype_orig is not None:
+            #     torch.set_default_dtype(dtype_orig)
 
             (
                 model,
@@ -2903,7 +2913,7 @@ class PreTrainedModel(nn.Cell, ModuleUtilsMixin, GenerationMixin, PushToHubMixin
         model.tie_weights()
 
         # Set model in evaluation mode to deactivate DropOut modules by default
-        model.eval()
+        model.set_train(False)
 
         # If it is a model with generation capabilities, attempt to load the generation config
         if model.can_generate():
@@ -2988,7 +2998,7 @@ class PreTrainedModel(nn.Cell, ModuleUtilsMixin, GenerationMixin, PushToHubMixin
 
         is_sharded_safetensors = is_safetensors and sharded_metadata is not None
         # Retrieve missing & unexpected_keys
-        model_state_dict = model.state_dict()
+        model_state_dict = model.parameters_dict()
         expected_keys = list(model_state_dict.keys())
         prefix = model.base_model_prefix
 
@@ -3076,10 +3086,10 @@ class PreTrainedModel(nn.Cell, ModuleUtilsMixin, GenerationMixin, PushToHubMixin
 
                 if param.device == torch.device("meta"):
                     if not (is_quantized):
-                        set_module_tensor_to_device(model, key, "cpu", torch.empty(*param.size(), dtype=target_dtype))
+                        set_module_tensor_to_device(model, key, "cpu", torch.empty(*param.shape, dtype=target_dtype))
                     else:
                         set_module_quantized_tensor_to_device(
-                            model, key, "cpu", torch.empty(*param.size(), dtype=target_dtype)
+                            model, key, "cpu", torch.empty(*param.shape, dtype=target_dtype)
                         )
 
         # retrieve unintialized modules and initialize before maybe overriding that with the pretrained weights.
@@ -3096,9 +3106,9 @@ class PreTrainedModel(nn.Cell, ModuleUtilsMixin, GenerationMixin, PushToHubMixin
 
         # Set some modules to fp32 if any
         if keep_in_fp32_modules is not None:
-            for name, param in model.named_parameters():
+            for name, param in model.parameters_and_names():
                 if any(module_to_keep_in_fp32 in name for module_to_keep_in_fp32 in keep_in_fp32_modules):
-                    param = param.to(torch.float32)
+                    param = param.to(ms.float32)
 
         # Make sure we are able to load base models as well as derived models (with heads)
         start_prefix = ""

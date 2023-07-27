@@ -21,6 +21,7 @@ import numpy as np
 import mindspore as ms
 from mindspore import ops
 
+from ..layers import finfo
 from ..utils import add_start_docstrings
 from ..utils.logging import get_logger
 
@@ -659,7 +660,7 @@ class NoBadWordsLogitsProcessor(LogitsProcessor):
                 # [ 1  0  0 ]
 
                 banned_mask = (
-                    ms.SparseTensor(banned_mask.t(), indices, scores.size())  # torch.sparse.LongTensor
+                    ms.SparseTensor(banned_mask.t(), indices, scores.shape)  # torch.sparse.LongTensor
                     .to(scores.device)
                     .to_dense()
                     .bool()
@@ -820,7 +821,7 @@ class InfNanRemoveLogitsProcessor(LogitsProcessor):
         scores[scores != scores] = 0.0
 
         # set all inf values to max possible value
-        scores[scores == float("inf")] = ops.finfo(scores.dtype).max
+        scores[scores == float("inf")] = finfo(scores.dtype).max
 
         return scores
 

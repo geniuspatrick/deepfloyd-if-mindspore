@@ -577,7 +577,7 @@ class GenerationMixin:
         encoder_outputs = model_kwargs.get("encoder_outputs")
         if self.config.is_encoder_decoder and encoder_outputs is not None:
             # make dummy input_ids with value -100, as a sanity check ensuring that they won't be used for encoding
-            shape = encoder_outputs.last_hidden_state.size()[:-1]
+            shape = encoder_outputs.last_hidden_state.shape[:-1]
             return ops.ones(shape, dtype=ms.int64) * -100
 
         if bos_token_id is None:
