@@ -898,7 +898,7 @@ class T5PreTrainedModel(PreTrainedModel):
             shifted_input_ids = ops.cat([shifted_input_ids, input_ids[..., :-1]], axis=-1)
         else:
             shifted_input_ids = input_ids.new_zeros(input_ids.shape)
-            shifted_input_ids[..., 1:] = input_ids[..., :-1].clone()
+            shifted_input_ids[..., 1:] = input_ids[..., :-1].copy()
             shifted_input_ids[..., 0] = decoder_start_token_id
 
         if pad_token_id is None:

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import mindspore as ms
 
 from .base import IFBaseModule
 from ..model import UNetModel
@@ -21,7 +22,10 @@ class IFStageI(IFBaseModule):
         # with accelerate.init_empty_weights():
         self.model = UNetModel(**model_params)
         self.model = self.load_checkpoint(self.model, self.dir_or_name)
-        self.model.eval()
+        self.model.to_float(ms.float16)
+        # for param in self.model.get_parameters(): todo: change dtype of parameter?
+        #     param.set_dtype(ms.float16)
+        self.model.set_train(False)
 
     def embeddings_to_image(self, t5_embs, style_t5_embs=None, positive_t5_embs=None, negative_t5_embs=None,
                             batch_repeat=1, dynamic_thresholding_p=0.95, sample_loop='ddpm', positive_mixer=0.25,

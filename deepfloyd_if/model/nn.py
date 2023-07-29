@@ -10,7 +10,7 @@ def mean_flat(tensor):
     """
     Take the mean over all non-batch dimensions.
     """
-    return tensor.mean(dim=list(range(1, len(tensor.shape))))
+    return tensor.mean(axis=list(range(1, len(tensor.shape))))
 
 
 def gelu(x):
@@ -46,6 +46,13 @@ class GroupNorm32(nn.GroupNorm):
     def __init__(self, num_groups, num_channels, eps=1e-5, dtype=None):
         super().__init__(num_groups=num_groups, num_channels=num_channels, eps=eps)
 
+    def construct(self, x):
+        x_shape = x.shape
+        if x.ndim >= 3:
+            x = x.view(x_shape[0], x_shape[1], x_shape[2], -1)
+        y = super().construct(x).to(x.dtype)
+        return y.view(x_shape)
+
 
 class AttentionPooling(nn.Cell):
 
@@ -73,7 +80,7 @@ class AttentionPooling(nn.Cell):
             x = x.transpose((0, 2, 1))
             return x
 
-        class_token = x.mean(dim=1, keep_dims=True) + self.positional_embedding.to(x.dtype)
+        class_token = x.mean(axis=1, keep_dims=True) + self.positional_embedding.to(x.dtype)
         x = ops.cat([class_token, x], axis=1)  # (bs, length+1, width)
 
         # (bs*n_heads, class_token_length, dim_per_head)
@@ -87,7 +94,7 @@ class AttentionPooling(nn.Cell):
         weight = ops.BatchMatMul(transpose_a=True)(  # 'bct,bcs->bts',
             q * scale, k * scale
         )  # More stable with f16 than dividing afterwards
-        weight = ops.softmax(weight.float(), axis=-1).type(weight.dtype)
+        weight = ops.softmax(weight.float(), axis=-1).to(weight.dtype)
 
         # (bs*n_heads, dim_per_head, class_token_length)
         a = ops.BatchMatMul(transpose_b=True)(v, weight)  # 'bcs,bts->bct'
@@ -135,7 +142,7 @@ def zero_module(module):
     """
     Zero out the parameters of a module and return it.
     """
-    for p in module.parameters():
+    for p in module.get_parameters():
         p.set_data(init.initializer("zeros", p.shape, p.dtype))
     return module
 
@@ -144,7 +151,7 @@ def scale_module(module, scale):
     """
     Scale the parameters of a module and return it.
     """
-    for p in module.parameters():
+    for p in module.get_parameters():
         p.set_data(init.initializer(scale * p.data))
     return module
 
@@ -173,7 +180,7 @@ def timestep_embedding(timesteps, dim, max_period=10000, dtype=None):
     freqs = ops.exp(
         -math.log(max_period) * ops.arange(start=0, end=half, dtype=ms.float32) / half
     ).to(dtype=dtype)
-    args = timesteps[:, None].type(dtype) * freqs[None]
+    args = timesteps[:, None].to(dtype) * freqs[None]
     embedding = ops.cat([ops.cos(args), ops.sin(args)], axis=-1)
     if dim % 2:
         embedding = ops.cat([embedding, ops.zeros_like(embedding[:, :1])], axis=-1)

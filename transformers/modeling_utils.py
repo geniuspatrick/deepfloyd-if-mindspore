@@ -1369,7 +1369,7 @@ class PreTrainedModel(nn.Cell, ModuleUtilsMixin, GenerationMixin, PushToHubMixin
     def _tie_or_clone_weights(self, output_embeddings, input_embeddings):
         """Tie or clone module weights depending of whether we are using TorchScript or not"""
         if self.config.torchscript:
-            output_embeddings.weight = nn.Parameter(input_embeddings.weight.clone())
+            output_embeddings.weight = nn.Parameter(input_embeddings.weight.copy())
         else:
             output_embeddings.weight = input_embeddings.weight
 

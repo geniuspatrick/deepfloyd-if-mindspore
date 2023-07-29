@@ -182,6 +182,7 @@ class GaussianDiffusion:
             assert dim == -1 or dim == 1
             x_sorted, _ = ops.sort(x)
             p_i, p_d = divmod(p * shape[0], 1)
+            p_i = int(p_i)
             return x_sorted[:, p_i] + (x_sorted[:, p_i + 1] - x_sorted[:, p_i]) * p_d
 
         x_shapes = x.shape
@@ -882,4 +883,4 @@ def _extract_into_tensor(arr, timesteps, broadcast_shape):
     res = ms.Tensor(arr)[timesteps].float()
     while len(res.shape) < len(broadcast_shape):
         res = res[..., None]
-    return res.expand(broadcast_shape)
+    return res.expand_as(ms.Tensor(np.zeros(broadcast_shape)))

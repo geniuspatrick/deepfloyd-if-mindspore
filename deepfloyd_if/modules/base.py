@@ -14,7 +14,7 @@ from omegaconf import OmegaConf
 
 from .. import utils
 from ..model.respace import create_gaussian_diffusion
-from .utils import load_model_weights, predict_proba, clip_process_generations
+from .utils import load_model_weights, predict_proba, clip_process_generations, get_pt2ms_mappings
 
 
 class IFBaseModule:
@@ -57,7 +57,7 @@ class IFBaseModule:
         self.cache_dir = cache_dir or os.path.expanduser('~/.cache/IF_')
         self.dir_or_name = dir_or_name
         self.conf = self.load_conf(dir_or_name) if not self.use_diffusers else None
-        self.zero_emb = self.cpu_zero_emb.clone()
+        self.zero_emb = self.cpu_zero_emb.copy()
         self.pil_img_size = pil_img_size
 
     @property
@@ -114,19 +114,19 @@ class IFBaseModule:
 
         seed = self.seed_everything(seed)
 
-        text_emb = t5_embs.to(dtype=self.model.dtype).repeat(batch_repeat, 1, 1)
-        batch_size = text_emb.shape[0] * batch_repeat
+        t5_embs = t5_embs.to(dtype=self.model.dtype).tile((batch_repeat, 1, 1))
+        batch_size = t5_embs.shape[0] * batch_repeat
 
         if positive_t5_embs is not None:
-            positive_t5_embs = positive_t5_embs.to(dtype=self.model.dtype).repeat(batch_repeat, 1, 1)
+            positive_t5_embs = positive_t5_embs.to(dtype=self.model.dtype).tile((batch_repeat, 1, 1))
 
         if negative_t5_embs is not None:
-            negative_t5_embs = negative_t5_embs.to(dtype=self.model.dtype).repeat(batch_repeat, 1, 1)
+            negative_t5_embs = negative_t5_embs.to(dtype=self.model.dtype).tile((batch_repeat, 1, 1))
 
         timestep_text_emb = None
         if style_t5_embs is not None:
             list_timestep_text_emb = [
-                style_t5_embs.to(dtype=self.model.dtype).repeat(batch_repeat, 1, 1),
+                style_t5_embs.to(dtype=self.model.dtype).tile((batch_repeat, 1, 1)),
             ]
             if positive_t5_embs is not None:
                 list_timestep_text_emb.append(positive_t5_embs)
@@ -134,7 +134,7 @@ class IFBaseModule:
                 list_timestep_text_emb.append(negative_t5_embs)
             else:
                 list_timestep_text_emb.append(
-                    self.zero_emb.unsqueeze(0).repeat(batch_size, 1, 1).to(dtype=self.model.dtype))
+                    self.zero_emb.unsqueeze(0).tile((batch_size, 1, 1)).to(dtype=self.model.dtype))
             timestep_text_emb = ops.cat(list_timestep_text_emb, axis=0).to(dtype=self.model.dtype)
 
         metadata = {
@@ -157,7 +157,7 @@ class IFBaseModule:
             list_text_emb.append(negative_t5_embs)
         else:
             list_text_emb.append(
-                self.zero_emb.unsqueeze(0).repeat(batch_size, 1, 1).to(dtype=self.model.dtype))
+                self.zero_emb.unsqueeze(0).tile((batch_size, 1, 1)).to(dtype=self.model.dtype))
 
         model_kwargs = dict(
             text_emb=ops.cat(list_text_emb, axis=0).to(dtype=self.model.dtype),
@@ -178,12 +178,12 @@ class IFBaseModule:
             assert support_noise.shape == (1, 3, image_h, image_w)
             q_sample_steps = ms.Tensor([int(len(diffusion.timestep_map) - 1 - support_noise_less_qsample_steps)])
             support_noise = support_noise.cpu()
-            noise = support_noise.clone()
+            noise = support_noise.copy()
             noise[inpainting_mask.cpu().bool() if inpainting_mask is not None else ...] = diffusion.q_sample(
                 support_noise[inpainting_mask.cpu().bool() if inpainting_mask is not None else ...],
                 q_sample_steps,
             )
-            noise = noise.repeat(batch_size*bs_scale, 1, 1, 1).to(dtype=self.model.dtype)
+            noise = noise.tile((batch_size*bs_scale, 1, 1, 1)).to(dtype=self.model.dtype)
 
         if inpainting_mask is not None:
             inpainting_mask = inpainting_mask.to(dtype=ms.int64)
@@ -220,7 +220,8 @@ class IFBaseModule:
         else:
             raise ValueError(f'Sample loop "{sample_loop}" doesnt support')
 
-        sample = self.__validate_generations(sample)
+        # todo: enable generations validation if we support clip.
+        # sample = self.__validate_generations(sample)
         self._clear_cache()
 
         return sample, metadata
@@ -233,8 +234,20 @@ class IFBaseModule:
     def load_checkpoint(self, model, dir_or_name, filename='pytorch_model.bin'):
         path = self._get_path_or_download_file_from_hf(dir_or_name, filename)
         if os.path.exists(path):
-            checkpoint = ms.load_checkpoint(path)
-            ms.load_param_into_net(model, checkpoint)
+            checkpoint_file = path
+            checkpoint_file_np = f"{os.path.splitext(checkpoint_file)[0]}.npy"
+            if not os.path.exists(checkpoint_file_np):
+                raise FileNotFoundError(f"You need to manually transfer {checkpoint_file} to {checkpoint_file_np}")
+            state_dict = np.load(checkpoint_file_np, allow_pickle=True).item()
+            mappings = get_pt2ms_mappings(model)
+            checkpoint = {}
+            for pt_name, pt_data in state_dict.items():
+                ms_name, data_mapping = mappings.get(pt_name, (pt_name, lambda x: x))
+                ms_data = data_mapping(pt_data)
+                checkpoint[ms_name] = ms.Parameter(ms_data.astype(np.float32), name=ms_name)
+            param_not_load, ckpt_not_load = ms.load_param_into_net(model, checkpoint)
+            if param_not_load or ckpt_not_load:
+                print(f"{param_not_load} in network is not loaded or {ckpt_not_load} in checkpoint is not loaded!")
         else:
             print(f'Warning! In directory "{dir_or_name}" filename "pytorch_model.bin" is not found.')
         return model
@@ -288,8 +301,8 @@ class IFBaseModule:
             (wm_size, wm_size), getattr(Image, 'Resampling', Image).BICUBIC, reducing_gap=None)
 
         pil_images = []
-        for image in ((generations + 1) * 127.5).round().clamp(0, 255).to(ms.uint8).cpu():
-            pil_img = Image.fromarray(image.asnumpy()).convert('RGB')
+        for image in ((generations + 1) * 127.5).round().clamp(0, 255).to(ms.uint8):
+            pil_img = Image.fromarray(image.transpose(1, 2, 0).asnumpy()).convert('RGB')
             pil_img = pil_img.resize((img_w, img_h), getattr(Image, 'Resampling', Image).NEAREST)
             if not disable_watermark:
                 pil_img.paste(wm_img, box=(wm_x - wm_size, wm_y - wm_size, wm_x, wm_y), mask=wm_img.split()[-1])
@@ -311,7 +324,7 @@ class IFBaseModule:
                 grid.paste(img, box=(i % cols * w, i // cols * h))
             return grid
 
-        imgs = make_grid(pil_images, nrow, len(pil_images) / nrow)
+        imgs = make_grid(pil_images, nrow, len(pil_images) // nrow)
         if not isinstance(imgs, list):
             imgs = [imgs]
 

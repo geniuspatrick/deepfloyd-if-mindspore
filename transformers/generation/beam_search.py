@@ -266,7 +266,7 @@ class BeamSearchScorer(BeamScorer):
                         beam_index = None
 
                     beam_hyp.add(
-                        input_ids[batch_beam_idx].clone(),
+                        input_ids[batch_beam_idx].copy(),
                         next_score.item(),
                         beam_indices=beam_index,
                     )
@@ -583,7 +583,7 @@ class ConstrainedBeamSearchScorer(BeamScorer):
                     completes_constraint = self.check_completes_constraints(input_ids[batch_beam_idx].cpu().tolist())
                     if completes_constraint:
                         beam_hyp.add(
-                            input_ids[batch_beam_idx].clone(),
+                            input_ids[batch_beam_idx].copy(),
                             next_score.item(),
                         )
                 else:

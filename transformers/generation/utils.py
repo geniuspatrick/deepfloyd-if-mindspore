@@ -1072,7 +1072,7 @@ class GenerationMixin:
         # 4. cut beam_indices to longest beam length
         beam_indices_mask = beam_indices < 0
         max_beam_length = (1 - beam_indices_mask.long()).sum(-1).max()
-        beam_indices = beam_indices.clone()[:, :max_beam_length]
+        beam_indices = beam_indices.copy()[:, :max_beam_length]
         beam_indices_mask = beam_indices_mask[:, :max_beam_length]
 
         # 5. Set indices of beams that finished early to 0; such indices will be masked correctly afterwards
@@ -3971,7 +3971,7 @@ class GenerationMixin:
 
             next_token_scores = next_token_scores_processed + beam_scores[:, None].expand_as(next_token_scores)
 
-            scores_for_all_vocab = next_token_scores.clone()
+            scores_for_all_vocab = next_token_scores.copy()
 
             # Store scores, attentions and hidden_states when required
             if return_dict_in_generate:

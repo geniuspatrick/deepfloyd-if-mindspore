@@ -63,7 +63,7 @@ class Upsample(nn.Cell):
         self.dims = dims
         self.dtype = dtype
         if use_conv:
-            self.conv = conv_nd(dims, self.channels, self.out_channels, 3, padding=1, dtype=self.dtype)
+            self.conv = conv_nd(dims, self.channels, self.out_channels, 3, pad_mode="pad", padding=1, has_bias=True)
 
     def construct(self, x):
         assert x.shape[1] == self.channels
@@ -71,10 +71,10 @@ class Upsample(nn.Cell):
             x = ops.interpolate(x, (x.shape[2], x.shape[3] * 2, x.shape[4] * 2), mode='nearest')
         else:
             if self.dtype == ms.float16:  # torch.bfloat16
-                x = x.type(ms.float32 if x.device.type == 'cpu' else ms.float16)
-            x = ops.interpolate(x, scale_factor=2, mode='nearest')
+                x = x.to(ms.float32)  # todo: do we need to cast x to fp32?
+            x = ops.interpolate(x, (x.shape[2] * 2, x.shape[3] * 2), mode='nearest')
             if self.dtype == ms.float16:  # torch.bfloat16
-                x = x.type(ms.float16)  # torch.bfloat16
+                x = x.to(ms.float16)  # torch.bfloat16
         if self.use_conv:
             x = self.conv(x)
         return x
@@ -98,7 +98,7 @@ class Downsample(nn.Cell):
         self.dtype = dtype
         stride = 2 if dims != 3 else (1, 2, 2)
         if use_conv:
-            self.op = conv_nd(dims, self.channels, self.out_channels, 3, stride=stride, padding=1, dtype=self.dtype)
+            self.op = conv_nd(dims, self.channels, self.out_channels, 3, stride=stride, pad_mode="pad", padding=1, has_bias=True)
         else:
             assert self.channels == self.out_channels
             self.op = avg_pool_nd(dims, kernel_size=stride, stride=stride)
@@ -153,7 +153,7 @@ class ResBlock(TimestepBlock):
         self.in_layers = nn.SequentialCell([
             normalization(channels, dtype=self.dtype),
             get_activation(activation),
-            conv_nd(dims, channels, self.out_channels, 3, padding=1, dtype=self.dtype),
+            conv_nd(dims, channels, self.out_channels, 3, pad_mode="pad", padding=1, has_bias=True),
         ])
 
         self.updown = up or down
@@ -172,22 +172,21 @@ class ResBlock(TimestepBlock):
             linear(
                 emb_channels,
                 2 * self.out_channels if use_scale_shift_norm else self.out_channels,
-                dtype=self.dtype
             ),
         ])
         self.out_layers = nn.SequentialCell([
             normalization(self.out_channels, dtype=self.dtype),
             get_activation(activation),
             nn.Dropout(p=dropout),
-            zero_module(conv_nd(dims, self.out_channels, self.out_channels, 3, padding=1, dtype=self.dtype)),
+            zero_module(conv_nd(dims, self.out_channels, self.out_channels, 3, pad_mode="pad", padding=1, has_bias=True)),
         ])
 
         if self.out_channels == channels:
             self.skip_connection = nn.Identity()
         elif use_conv:
-            self.skip_connection = conv_nd(dims, channels, self.out_channels, 3, padding=1, dtype=self.dtype)
+            self.skip_connection = conv_nd(dims, channels, self.out_channels, 3, pad_mode="pad", padding=1, has_bias=True)
         else:
-            self.skip_connection = conv_nd(dims, channels, self.out_channels, 1, dtype=self.dtype)
+            self.skip_connection = conv_nd(dims, channels, self.out_channels, 1, has_bias=True)
 
     def construct(self, x, emb):
         """
@@ -204,7 +203,7 @@ class ResBlock(TimestepBlock):
             h = in_conv(h)
         else:
             h = self.in_layers(x)
-        emb_out = self.emb_layers(emb).type(h.dtype)
+        emb_out = self.emb_layers(emb).to(h.dtype)
         while len(emb_out.shape) < len(h.shape):
             emb_out = emb_out[..., None]
         if self.use_scale_shift_norm:
@@ -250,17 +249,17 @@ class AttentionBlock(nn.Cell):
             ), f'q,k,v channels {channels} is not divisible by num_head_channels {num_head_channels}'
             self.num_heads = channels // num_head_channels
         self.norm = normalization(channels, dtype=self.dtype)
-        self.qkv = conv_nd(1, channels, channels * 3, 1, dtype=self.dtype)
+        self.qkv = conv_nd(1, channels, channels * 3, 1, has_bias=True)
         if self.disable_self_attention:
-            self.qkv = conv_nd(1, channels, channels, 1, dtype=self.dtype)
+            self.qkv = conv_nd(1, channels, channels, 1, has_bias=True)
         else:
-            self.qkv = conv_nd(1, channels, channels * 3, 1, dtype=self.dtype)
+            self.qkv = conv_nd(1, channels, channels * 3, 1, has_bias=True)
         self.attention = QKVAttention(self.num_heads, disable_self_attention=disable_self_attention)
 
         if encoder_channels is not None:
-            self.encoder_kv = conv_nd(1, encoder_channels, channels * 2, 1, dtype=self.dtype)
+            self.encoder_kv = conv_nd(1, encoder_channels, channels * 2, 1, has_bias=True)
             self.norm_encoder = normalization(encoder_channels, dtype=self.dtype)
-        self.proj_out = zero_module(conv_nd(1, channels, channels, 1, dtype=self.dtype))
+        self.proj_out = zero_module(conv_nd(1, channels, channels, 1, has_bias=True))
 
     def construct(self, x, encoder_out=None):
         b, c, *spatial = x.shape
@@ -296,21 +295,22 @@ class QKVAttention(nn.Cell):
         bs, width, length = qkv.shape
         if self.disable_self_attention:
             ch = width // (1 * self.n_heads)
-            q, = qkv.reshape(bs * self.n_heads, ch * 1, length).split(ch, dim=1)
+            q, = qkv.reshape(bs * self.n_heads, ch * 1, length).split(ch, axis=1)
         else:
             assert width % (3 * self.n_heads) == 0
             ch = width // (3 * self.n_heads)
-            q, k, v = qkv.reshape(bs * self.n_heads, ch * 3, length).split(ch, dim=1)
+            q, k, v = qkv.reshape(bs * self.n_heads, ch * 3, length).split(ch, axis=1)
         if encoder_kv is not None:
             assert encoder_kv.shape[1] == self.n_heads * ch * 2
             if self.disable_self_attention:
-                k, v = encoder_kv.reshape(bs * self.n_heads, ch * 2, -1).split(ch, dim=1)
+                k, v = encoder_kv.reshape(bs * self.n_heads, ch * 2, -1).split(ch, axis=1)
             else:
-                ek, ev = encoder_kv.reshape(bs * self.n_heads, ch * 2, -1).split(ch, dim=1)
+                ek, ev = encoder_kv.reshape(bs * self.n_heads, ch * 2, -1).split(ch, axis=1)
                 k = ops.cat([ek, k], axis=-1)
                 v = ops.cat([ev, v], axis=-1)
         scale = 1 / math.sqrt(math.sqrt(ch))
         if _FORCE_MEM_EFFICIENT_ATTN:
+            raise NotImplementedError("Memory Efficient Attention is not supported for now!")
             q, k, v = map(lambda t: t.permute(0, 2, 1).contiguous(), (q, k, v))
             a = memory_efficient_attention(q, k, v)
             a = a.permute(0, 2, 1)
@@ -318,7 +318,7 @@ class QKVAttention(nn.Cell):
             weight = ops.BatchMatMul(transpose_a=True)(  # 'bct,bcs->bts'
                 q * scale, k * scale
             )  # More stable with f16 than dividing afterwards
-            weight = ops.softmax(weight.float(), axis=-1).type(weight.dtype)
+            weight = ops.softmax(weight.float(), axis=-1).to(weight.dtype)
             a = ops.BatchMatMul(transpose_b=True)(v, weight)  # 'bcs,bts->bct'
         return a.reshape(bs, -1, length)
 
@@ -439,18 +439,16 @@ class UNetModel(nn.Cell):
 
         self.time_embed_dim = model_channels * max(self.channel_mult)
         self.time_embed = nn.SequentialCell([
-            linear(model_channels, self.time_embed_dim, dtype=self.dtype),
+            linear(model_channels, self.time_embed_dim),  # dtype=self.dtype
             get_activation(activation),
-            linear(self.time_embed_dim, self.time_embed_dim, dtype=self.dtype),
+            linear(self.time_embed_dim, self.time_embed_dim),  # dtype=self.dtype
         ])
 
         if self.num_classes is not None:
             self.label_emb = Embedding(num_classes, self.time_embed_dim)
 
         ch = input_ch = int(self.channel_mult[0] * model_channels)
-        self.input_blocks = nn.CellList(
-            [TimestepEmbedSequential(conv_nd(dims, in_channels, ch, 3, padding=1, dtype=self.dtype))]
-        )
+        input_blocks = [TimestepEmbedSequential(conv_nd(dims, in_channels, ch, 3, pad_mode='pad', padding=1, has_bias=True))]
         self._feature_size = ch
         input_block_chans = [ch]
         ds = 1
@@ -487,12 +485,12 @@ class UNetModel(nn.Cell):
                             disable_self_attention=ds in self.disable_self_attentions,
                         )
                     )
-                self.input_blocks.append(TimestepEmbedSequential(*layers))
+                input_blocks.append(TimestepEmbedSequential(*layers))
                 self._feature_size += ch
                 input_block_chans.append(ch)
             if level != len(self.channel_mult) - 1:
                 out_ch = ch
-                self.input_blocks.append(
+                input_blocks.append(
                     TimestepEmbedSequential(
                         ResBlock(
                             ch,
@@ -515,8 +513,9 @@ class UNetModel(nn.Cell):
                 input_block_chans.append(ch)
                 ds *= 2
                 self._feature_size += ch
+        self.input_blocks = nn.CellList(input_blocks)
 
-        self.middle_block = TimestepEmbedSequential(
+        self.middle_block = TimestepEmbedSequential([
             ResBlock(
                 ch,
                 self.time_embed_dim,
@@ -547,7 +546,7 @@ class UNetModel(nn.Cell):
                 efficient_activation=self.efficient_activation,
                 scale_skip_connection=self.scale_skip_connection,
             ),
-        )
+        ])
         self._feature_size += ch
 
         output_blocks = []
@@ -607,16 +606,16 @@ class UNetModel(nn.Cell):
         self.out = nn.SequentialCell([
             normalization(ch, dtype=self.dtype),
             get_activation(activation),
-            zero_module(conv_nd(dims, input_ch, out_channels, 3, padding=1, dtype=self.dtype)),
+            zero_module(conv_nd(dims, input_ch, out_channels, 3, pad_mode="pad", padding=1, has_bias=True)),
         ])
 
         self.activation_layer = get_activation(activation) if self.efficient_activation else nn.Identity()
 
         self.encoder_pooling = nn.SequentialCell([
-            nn.LayerNorm(encoder_dim),
+            nn.LayerNorm((encoder_dim,)),
             AttentionPooling(att_pool_heads, encoder_dim, dtype=self.dtype),
             nn.Dense(encoder_dim, self.time_embed_dim),
-            nn.LayerNorm(self.time_embed_dim)
+            nn.LayerNorm((self.time_embed_dim,))
         ])
 
         if encoder_dim != encoder_channels:
@@ -633,23 +632,23 @@ class UNetModel(nn.Cell):
         if use_cache and self.cache is not None:
             encoder_out, encoder_pool = self.cache
         else:
-            text_emb = text_emb.type(self.dtype)
+            text_emb = text_emb.to(self.dtype)
             encoder_out = self.encoder_proj(text_emb)
-            encoder_out = encoder_out.permute(0, 2, 1)  # NLC -> NCL
+            encoder_out = encoder_out.transpose(0, 2, 1)  # NLC -> NCL
             if timestep_text_emb is None:
                 timestep_text_emb = text_emb
             encoder_pool = self.encoder_pooling(timestep_text_emb)
             if use_cache:
                 self.cache = (encoder_out, encoder_pool)
 
-        emb = emb + encoder_pool.to(emb)
+        emb = emb + encoder_pool.to(emb.dtype)
 
         if aug_emb is not None:
-            emb = emb + aug_emb.to(emb)
+            emb = emb + aug_emb.to(emb.dtype)
 
         emb = self.activation_layer(emb)
 
-        h = x.type(self.dtype)
+        h = x.to(self.dtype)
         for module in self.input_blocks:
             h = module(h, emb, encoder_out)
             hs.append(h)
@@ -657,7 +656,7 @@ class UNetModel(nn.Cell):
         for module in self.output_blocks:
             h = ops.cat([h, hs.pop()], axis=1)
             h = module(h, emb, encoder_out)
-        h = h.type(self.dtype)
+        h = h.to(self.dtype)
         h = self.out(h)
         return h
 
@@ -674,9 +673,9 @@ class SuperResUNetModel(UNetModel):
         super().__init__(*args, **kwargs)
 
         self.aug_proj = nn.SequentialCell([
-            linear(self.model_channels, self.time_embed_dim, dtype=self.dtype),
+            linear(self.model_channels, self.time_embed_dim),
             get_activation(kwargs['activation']),
-            linear(self.time_embed_dim, self.time_embed_dim, dtype=self.dtype),
+            linear(self.time_embed_dim, self.time_embed_dim),
         ])
 
     def construct(self, x, timesteps, low_res, aug_level=None, **kwargs):
