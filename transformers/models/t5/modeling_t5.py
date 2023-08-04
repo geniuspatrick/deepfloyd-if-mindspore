@@ -408,13 +408,15 @@ class T5Attention(nn.Cell):
         Returns:
             a Tensor with the same shape as relative_position, containing int32 values in the range [0, num_buckets)
         """
+        # todo: only work as numpy, for mindspore.ops.log having poor precision.
+        relative_position = relative_position.numpy()
         relative_buckets = 0
         if bidirectional:
             num_buckets //= 2
-            relative_buckets += (relative_position > 0).to(ms.int64) * num_buckets
-            relative_position = ops.abs(relative_position)
+            relative_buckets += (relative_position > 0).astype(np.int64) * num_buckets
+            relative_position = np.abs(relative_position)
         else:
-            relative_position = -ops.minimum(relative_position, ops.zeros_like(relative_position))
+            relative_position = -np.minimum(relative_position, np.zeros_like(relative_position))
         # now relative_position is in the range [0, inf)
 
         # half of the buckets are for exact increments in positions
@@ -423,15 +425,16 @@ class T5Attention(nn.Cell):
 
         # The other half of the buckets are for logarithmically bigger bins in positions up to max_distance
         relative_position_if_large = max_exact + (
-            ops.log(relative_position.float() / max_exact)
+            np.log(relative_position.astype(np.float32) / max_exact)
             / math.log(max_distance / max_exact)
             * (num_buckets - max_exact)
-        ).to(ms.int64)
-        relative_position_if_large = ops.minimum(
-            relative_position_if_large, ops.full_like(relative_position_if_large, num_buckets - 1)
+        ).astype(np.int64)
+        relative_position_if_large = np.minimum(
+            relative_position_if_large, np.full_like(relative_position_if_large, num_buckets - 1)
         )
 
-        relative_buckets += ops.where(is_small, relative_position, relative_position_if_large)
+        relative_buckets += np.where(is_small, relative_position, relative_position_if_large)
+        relative_buckets = ms.Tensor(relative_buckets)
         return relative_buckets
 
     def compute_bias(self, query_length, key_length, device=None):
@@ -704,11 +707,8 @@ class T5Block(nn.Cell):
 
         # clamp inf values to enable fp16 training
         if hidden_states.dtype == ms.float16:
-            clamp_value = ops.where(
-                ops.isinf(hidden_states).any(),
-                finfo(hidden_states.dtype).max - 1000,
-                finfo(hidden_states.dtype).max,
-            )
+            clamp_value = finfo(hidden_states.dtype).max - 1000 if ops.isinf(hidden_states).any() else finfo(hidden_states.dtype).max
+            clamp_value = clamp_value.item()
             hidden_states = ops.clamp(hidden_states, min=-clamp_value, max=clamp_value)
 
         do_cross_attention = self.is_decoder and encoder_hidden_states is not None
@@ -735,11 +735,8 @@ class T5Block(nn.Cell):
 
             # clamp inf values to enable fp16 training
             if hidden_states.dtype == ms.float16:
-                clamp_value = ops.where(
-                    ops.isinf(hidden_states).any(),
-                    finfo(hidden_states.dtype).max - 1000,
-                    finfo(hidden_states.dtype).max,
-                )
+                clamp_value = finfo(hidden_states.dtype).max - 1000 if ops.isinf(hidden_states).any() else finfo(hidden_states.dtype).max
+                clamp_value = clamp_value.item()
                 hidden_states = ops.clamp(hidden_states, min=-clamp_value, max=clamp_value)
 
             # Combine self attn and cross attn key value states
@@ -754,11 +751,8 @@ class T5Block(nn.Cell):
 
         # clamp inf values to enable fp16 training
         if hidden_states.dtype == ms.float16:
-            clamp_value = ops.where(
-                ops.isinf(hidden_states).any(),
-                finfo(hidden_states.dtype).max - 1000,
-                finfo(hidden_states.dtype).max,
-            )
+            clamp_value = finfo(hidden_states.dtype).max - 1000 if ops.isinf(hidden_states).any() else finfo(hidden_states.dtype).max
+            clamp_value = clamp_value.item()
             hidden_states = ops.clamp(hidden_states, min=-clamp_value, max=clamp_value)
 
         outputs = (hidden_states,)
@@ -939,8 +933,8 @@ class T5Stack(T5PreTrainedModel):
             FutureWarning,
         )
         # Check validity of device_map
-        self.device_map = (
-            get_device_map(len(self.block), range(torch.cuda.device_count())) if device_map is None else device_map
+        self.device_map = (  # todo : torch.cuda.device_count() == ms.communication.get_group_size()?
+            get_device_map(len(self.block), range(ms.communication.get_group_size())) if device_map is None else device_map
         )
         assert_device_map(self.device_map, len(self.block))
         self.model_parallel = True
@@ -996,7 +990,7 @@ class T5Stack(T5PreTrainedModel):
     ):
         # Model parallel
         if self.model_parallel:
-            torch.cuda.set_device(self.first_device)
+            raise NotImplementedError("Model parallel is not supported, cannot set_device(self.first_device)")
             self.embed_tokens = self.embed_tokens.to(self.first_device)
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -1038,7 +1032,7 @@ class T5Stack(T5PreTrainedModel):
         if self.is_decoder and encoder_attention_mask is None and encoder_hidden_states is not None:
             encoder_seq_length = encoder_hidden_states.shape[1]
             encoder_attention_mask = ops.ones(
-                batch_size, encoder_seq_length, dtype=ms.int64
+                (batch_size, encoder_seq_length), dtype=ms.int64
             )
 
         # initialize past_key_values with `None` if past does not exist
@@ -1047,7 +1041,7 @@ class T5Stack(T5PreTrainedModel):
 
         # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
         # ourselves in which case we just need to make it broadcastable to all heads.
-        extended_attention_mask = self.get_extended_attention_mask(attention_mask, input_shape, dtype=ms.float32)
+        extended_attention_mask = self.get_extended_attention_mask(attention_mask, input_shape, dtype=inputs_embeds.dtype)
 
         # If a 2D or 3D attention mask is provided for the cross-attention
         # we need to make broadcastable to [batch_size, num_heads, seq_length, seq_length]
@@ -1084,7 +1078,7 @@ class T5Stack(T5PreTrainedModel):
             cross_attn_layer_head_mask = cross_attn_head_mask[i]
             # Model parallel
             if self.model_parallel:
-                torch.cuda.set_device(hidden_states.device)
+                raise NotImplementedError("Model parallel is not supported, cannot set_device(hidden_states.device)")
                 # Ensure that attention_mask is always on the same device as hidden_states
                 if attention_mask is not None:
                     attention_mask = attention_mask.to(hidden_states.device)
@@ -1398,7 +1392,7 @@ class T5Model(T5PreTrainedModel):
             FutureWarning,
         )
         self.device_map = (
-            get_device_map(len(self.encoder.block), range(torch.cuda.device_count()))
+            get_device_map(len(self.encoder.block), range(ms.communication.get_group_size()))
             if device_map is None
             else device_map
         )
@@ -1518,7 +1512,7 @@ class T5Model(T5PreTrainedModel):
 
         # Set device for model parallelism
         if self.model_parallel:
-            torch.cuda.set_device(self.decoder.first_device)
+            raise NotImplementedError("Model parallel is not supported, cannot set_device(self.decoder.first_device)")
             hidden_states = hidden_states.to(self.decoder.first_device)
             if decoder_input_ids is not None:
                 decoder_input_ids = decoder_input_ids.to(self.decoder.first_device)
@@ -1602,7 +1596,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
             FutureWarning,
         )
         self.device_map = (
-            get_device_map(len(self.encoder.block), range(torch.cuda.device_count()))
+            get_device_map(len(self.encoder.block), range(ms.communication.get_group_size()))
             if device_map is None
             else device_map
         )
@@ -1730,7 +1724,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         hidden_states = encoder_outputs[0]
 
         if self.model_parallel:
-            torch.cuda.set_device(self.decoder.first_device)
+            raise NotImplementedError("Model parallel is not supported, cannot set_device(self.decoder.first_device)")
 
         if labels is not None and decoder_input_ids is None and decoder_inputs_embeds is None:
             # get decoder inputs from shifting lm labels to the right
@@ -1738,7 +1732,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
 
         # Set device for model parallelism
         if self.model_parallel:
-            torch.cuda.set_device(self.decoder.first_device)
+            raise NotImplementedError("Model parallel is not supported, cannot set_device(self.decoder.first_device)")
             hidden_states = hidden_states.to(self.decoder.first_device)
             if decoder_input_ids is not None:
                 decoder_input_ids = decoder_input_ids.to(self.decoder.first_device)
@@ -1898,7 +1892,7 @@ class T5EncoderModel(T5PreTrainedModel):
             FutureWarning,
         )
         self.device_map = (
-            get_device_map(len(self.encoder.block), range(torch.cuda.device_count()))
+            get_device_map(len(self.encoder.block), range(ms.communication.get_group_size()))
             if device_map is None
             else device_map
         )
@@ -1916,7 +1910,7 @@ class T5EncoderModel(T5PreTrainedModel):
         self.encoder = self.encoder.to("cpu")
         self.model_parallel = False
         self.device_map = None
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
 
     def get_input_embeddings(self):
         return self.shared

@@ -821,7 +821,7 @@ class InfNanRemoveLogitsProcessor(LogitsProcessor):
         scores[scores != scores] = 0.0
 
         # set all inf values to max possible value
-        scores[scores == float("inf")] = finfo(scores.dtype).max
+        scores[scores == float("inf")] = finfo(scores.dtype).max.item()
 
         return scores
 
