@@ -7,17 +7,9 @@ t5 = T5Embedder()
 if_I = IFStageI('IF-I-M-v1.0')
 if_II = IFStageII('IF-II-M-v1.0')
 # if_III = StableStageIII('stable-diffusion-x4-upscaler')
-for name, module in t5.model.cells_and_names():
-    module.debug_name = name
 
 prompt = 'ultra close-up color photo portrait of rainbow owl with deer horns in the woods'
 count = 4
-
-t5_embs = t5.get_text_embeddings([prompt] * 2)
-print(t5_embs)
-import numpy as np
-np.save("text_encoder_embs.npy", t5_embs.numpy())
-exit(0)
 
 result = dream(
     t5=t5, if_I=if_I, if_II=if_II, if_III=None,
@@ -40,4 +32,4 @@ result = dream(
 
 if_II.show(result["II"])
 
-if_III.show(result['III'], size=14)
+# if_III.show(result['III'], size=14)

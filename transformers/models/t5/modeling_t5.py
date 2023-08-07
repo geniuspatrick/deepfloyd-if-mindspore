@@ -529,23 +529,11 @@ class T5Attention(nn.Cell):
         value_states = project(
             hidden_states, self.v, key_value_states, past_key_value[1] if past_key_value is not None else None
         )
-        debug_name = self.q.debug_name
-        print(f"dumping output of {debug_name}")
-        np.save(f"debug_t5/{debug_name}.npy", query_states.numpy())
-        debug_name = self.k.debug_name
-        print(f"dumping output of {debug_name}")
-        np.save(f"debug_t5/{debug_name}.npy", key_states.numpy())
-        debug_name = self.v.debug_name
-        print(f"dumping output of {debug_name}")
-        np.save(f"debug_t5/{debug_name}.npy", value_states.numpy())
 
         # compute scores
         scores = ops.matmul(
             query_states, key_states.transpose(0, 1, 3, 2)
         )  # equivalent of torch.einsum("bnqd,bnkd->bnqk", query_states, key_states), compatible with onnx op>9
-        debug_name = f"{self.debug_name}.s"
-        print(f"dumping output of {debug_name}")
-        np.save(f"debug_t5/{debug_name}.npy", scores.numpy())
 
         if position_bias is None:
             if not self.has_relative_attention_bias:
@@ -564,9 +552,6 @@ class T5Attention(nn.Cell):
 
             if mask is not None:
                 position_bias = position_bias + mask  # (batch_size, n_heads, seq_length, key_length)
-        debug_name = f"{self.debug_name}.pb"
-        print(f"dumping output of {debug_name}")
-        np.save(f"debug_t5/{debug_name}.npy", position_bias.numpy())
 
         if self.pruned_heads:
             mask = ops.ones(position_bias.shape[1])
@@ -586,15 +571,9 @@ class T5Attention(nn.Cell):
         # Mask heads if we want to
         if layer_head_mask is not None:
             attn_weights = attn_weights * layer_head_mask
-        debug_name = f"{self.debug_name}.aw"
-        print(f"dumping output of {debug_name}")
-        np.save(f"debug_t5/{debug_name}.npy", attn_weights.numpy())
 
         attn_output = unshape(ops.matmul(attn_weights, value_states))  # (batch_size, seq_length, dim)
         attn_output = self.o(attn_output)
-        debug_name = f"{self.debug_name}.ao"
-        print(f"dumping output of {debug_name}")
-        np.save(f"debug_t5/{debug_name}.npy", attn_output.numpy())
 
         present_key_value_state = (key_states, value_states) if (self.is_decoder and use_cache) else None
         outputs = (attn_output,) + (present_key_value_state,) + (position_bias,)
@@ -622,9 +601,6 @@ class T5LayerSelfAttention(nn.Cell):
         output_attentions=False,
     ):
         normed_hidden_states = self.layer_norm(hidden_states)
-        debug_name = self.layer_norm.debug_name
-        print(f"dumping output of {debug_name}")
-        np.save(f"debug_t5/{debug_name}.npy", normed_hidden_states.numpy())
         attention_output = self.SelfAttention(
             normed_hidden_states,
             mask=attention_mask,
@@ -634,9 +610,6 @@ class T5LayerSelfAttention(nn.Cell):
             use_cache=use_cache,
             output_attentions=output_attentions,
         )
-        debug_name = self.SelfAttention.debug_name
-        print(f"dumping output of {debug_name}")
-        np.save(f"debug_t5/{debug_name}.npy", attention_output[0].numpy())
         hidden_states = hidden_states + self.dropout(attention_output[0])
         outputs = (hidden_states,) + attention_output[1:]  # add attentions if we output them
         return outputs
@@ -732,9 +705,6 @@ class T5Block(nn.Cell):
         )
         hidden_states, present_key_value_state = self_attention_outputs[:2]
         attention_outputs = self_attention_outputs[2:]  # Keep self-attention outputs and relative position weights
-        debug_name = self.layer[0].debug_name
-        print(f"dumping output of {debug_name}")
-        np.save(f"debug_t5/{debug_name}.npy", hidden_states.numpy())
 
         # clamp inf values to enable fp16 training
         if hidden_states.dtype == ms.float16:
@@ -786,9 +756,6 @@ class T5Block(nn.Cell):
             clamp_value = clamp_value.item()
             hidden_states = ops.clamp(hidden_states, min=-clamp_value, max=clamp_value)
 
-        debug_name = self.layer[-1].debug_name
-        print(f"dumping output of {debug_name}")
-        np.save(f"debug_t5/{debug_name}.npy", hidden_states.numpy())
         outputs = (hidden_states,)
 
         if use_cache:
@@ -1051,9 +1018,6 @@ class T5Stack(T5PreTrainedModel):
             if self.embed_tokens is None:
                 raise ValueError("You have to initialize the model with valid token embeddings")
             inputs_embeds = self.embed_tokens(input_ids)
-            debug_name = self.embed_tokens.debug_name
-            print(f"dumping output of {debug_name}")
-            np.save(f"debug_t5/{debug_name}.npy", inputs_embeds.numpy())
 
         batch_size, seq_length = input_shape
 
@@ -1169,9 +1133,6 @@ class T5Stack(T5PreTrainedModel):
                     use_cache=use_cache,
                     output_attentions=output_attentions,
                 )
-                debug_name = layer_module.debug_name
-                print(f"dumping output of {debug_name}")
-                np.save(f"debug_t5/{debug_name}.npy", layer_outputs[0].numpy())
 
             # layer_outputs is a tuple with:
             # hidden-states, key-value-states, (self-attention position bias), (self-attention weights), (cross-attention position bias), (cross-attention weights)

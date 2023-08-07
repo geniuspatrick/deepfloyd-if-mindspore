@@ -4,7 +4,7 @@ import numpy as np
 if __name__ == '__main__':
     root_ms = "/Users/wyf/DevPy/deepfloyd-if-mindspore/debug_t5"
     root_pt = "/Users/wyf/DevPy/deepfloyd-if/debug_t5"
-    feat_name = "encoder.block.0.layer.0.layer_norm.npy"
+    feat_name = "text_encoder_embs.npy"
     feat_ms = np.load(f"{root_ms}/{feat_name}")
     feat_pt = np.load(f"{root_pt}/{feat_name}")
     feat_diff = feat_pt - feat_ms
@@ -63,4 +63,5 @@ if __name__ == '__main__':
         "FF",
     ]])
     plt.plot(diffs)
+    plt.savefig("debug_t5/diff.jpg")
     plt.show()

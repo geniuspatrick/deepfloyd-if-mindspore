@@ -426,6 +426,9 @@ class UNetModel(nn.Cell):
         self.num_classes = num_classes
         self.dtype = ms.float32
 
+        if precision != "32":
+            print(f"UNet only support fp32 for now, but got precision={precision}. Omitting precision config!")
+            precision = "32"
         self.precision = str(precision)
         self.use_fp16 = precision == '16'
         if self.precision == '16':

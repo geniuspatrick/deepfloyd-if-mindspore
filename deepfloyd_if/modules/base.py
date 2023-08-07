@@ -37,6 +37,7 @@ class IFBaseModule:
     }
 
     wm_pil_img = Image.open(os.path.join(utils.RESOURCES_ROOT, 'wm.png'))
+    logo_pil_img = Image.open(os.path.join(utils.RESOURCES_ROOT, 'logo.jpeg'))
 
     # todo: we need to implement clip in mindspore
     # try:
@@ -299,6 +300,8 @@ class IFBaseModule:
 
         wm_img = self.wm_pil_img.resize(
             (wm_size, wm_size), getattr(Image, 'Resampling', Image).BICUBIC, reducing_gap=None)
+        logo_img = self.logo_pil_img.resize(
+            (wm_size, wm_size), getattr(Image, 'Resampling', Image).BICUBIC, reducing_gap=None)
 
         pil_images = []
         for image in ((generations + 1) * 127.5).round().clamp(0, 255).to(ms.uint8):
@@ -306,6 +309,7 @@ class IFBaseModule:
             pil_img = pil_img.resize((img_w, img_h), getattr(Image, 'Resampling', Image).NEAREST)
             if not disable_watermark:
                 pil_img.paste(wm_img, box=(wm_x - wm_size, wm_y - wm_size, wm_x, wm_y), mask=wm_img.split()[-1])
+                pil_img.paste(logo_img, box=(wm_x - wm_size * 2, wm_y - wm_size, wm_x - wm_size, wm_y))
             pil_images.append(pil_img)
         return pil_images
 
@@ -333,6 +337,7 @@ class IFBaseModule:
             axs[0, i].imshow(np.asarray(img))
             axs[0, i].set(xticklabels=[], yticklabels=[], xticks=[], yticks=[])
 
+        plt.savefig("res.jpg")
         fix.show()
         plt.show()
 

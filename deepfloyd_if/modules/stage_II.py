@@ -16,7 +16,6 @@ class IFStageII(IFBaseModule):
         # with accelerate.init_empty_weights():
         self.model = SuperResUNetModel(low_res_diffusion=self.get_diffusion('1000'), **model_params)
         self.model = self.load_checkpoint(self.model, self.dir_or_name)
-        self.model.to_float(ms.float16)
         self.model.set_train(False)
 
     def embeddings_to_image(

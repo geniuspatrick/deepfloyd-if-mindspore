@@ -61,6 +61,10 @@ def dream(
         prompt = [prompt]
 
     t5_embs = t5.get_text_embeddings(prompt)
+    # import numpy as np
+    # import mindspore as ms
+    # t5_embs = np.load("../deepfloyd-if/debug_t5/text_encoder_embs.npy")
+    # t5_embs = ms.Tensor(t5_embs)
 
     if_I_kwargs = if_I_kwargs or {}
     if_I_kwargs['seed'] = seed
