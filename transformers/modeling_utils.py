@@ -523,6 +523,24 @@ def _load_state_dict_into_model(model_to_load, state_dict, start_prefix):
 
     error_msgs = []
 
+    def load_param_into_net(net: nn.Cell, parameter_dict: Dict, strict_load: bool = False):
+        import copy
+        if not isinstance(net, nn.Cell):
+            raise TypeError(f"'net' should be a Cell, but got {type(net)}.")
+        if not isinstance(parameter_dict, dict):
+            raise TypeError(f"'parameter_dict' should be a dict, but got {type(parameter_dict)}.")
+
+        param_not_load = []
+        ckpt_not_load = list(parameter_dict.keys())
+        for _, param in net.parameters_and_names():
+            if param.name in parameter_dict:
+                new_param = copy.deepcopy(parameter_dict[param.name])
+                ms.train.serialization._update_param(param, new_param, strict_load)
+                ckpt_not_load.remove(param.name)
+            else:
+                param_not_load.append(param.name)
+        return param_not_load, ckpt_not_load
+
     # PyTorch's `_load_from_state_dict` does not copy parameters in a module's descendants
     # so we need to apply the function recursively.
     def load(module: nn.Cell, state_dict, prefix=""):
@@ -553,8 +571,9 @@ def _load_state_dict_into_model(model_to_load, state_dict, start_prefix):
                 load(child, state_dict, prefix + name + ".")
 
     # load(model_to_load, state_dict, prefix=start_prefix)
-    param_not_load, ckpt_not_load = ms.load_param_into_net(model_to_load, state_dict)
-    logger.warning(f"{ckpt_not_load} in checkpoint is not loaded!")
+    param_not_load, ckpt_not_load = load_param_into_net(model_to_load, state_dict)
+    if ckpt_not_load:
+        logger.warning(f"{ckpt_not_load} in checkpoint is not loaded!")
     # Delete `state_dict` so it could be collected by GC earlier. Note that `state_dict` is a copy of the argument, so
     # it's safe to delete it.
     del state_dict

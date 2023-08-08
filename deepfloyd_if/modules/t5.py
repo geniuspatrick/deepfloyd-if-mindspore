@@ -58,6 +58,7 @@ class T5Embedder:
                 t5_model_kwargs['device_map'] = {'shared': self.device, 'encoder': self.device}
             t5_model_kwargs.pop('device_map')  # does not support device_map
             t5_model_kwargs.pop('low_cpu_mem_usage')  # does not support low_cpu_mem_usage
+            t5_model_kwargs.pop('torch_dtype')  # does not support torch_dtype
 
         self.use_text_preprocessing = use_text_preprocessing
         self.hf_token = hf_token

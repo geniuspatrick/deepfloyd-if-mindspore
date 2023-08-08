@@ -91,6 +91,9 @@ class AttentionPooling(nn.Cell):
 
         # (bs*n_heads, class_token_length, length+class_token_length):
         scale = 1 / math.sqrt(math.sqrt(self.dim_per_head))
+        assert q.dtype == k.dtype == v.dtype
+        ori_dtype = q.dtype  # BatchMatMul has to run in fp16 mode on ascend!
+        q, k, v = q.to(ms.float16), k.to(ms.float16), v.to(ms.float16)
         weight = ops.BatchMatMul(transpose_a=True)(  # 'bct,bcs->bts',
             q * scale, k * scale
         )  # More stable with f16 than dividing afterwards
@@ -98,6 +101,7 @@ class AttentionPooling(nn.Cell):
 
         # (bs*n_heads, dim_per_head, class_token_length)
         a = ops.BatchMatMul(transpose_b=True)(v, weight)  # 'bcs,bts->bct'
+        a = a.to(ori_dtype)
 
         # (bs, length+1, width)
         a = a.reshape(bs, -1, 1).transpose((0, 2, 1))

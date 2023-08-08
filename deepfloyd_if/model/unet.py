@@ -315,11 +315,15 @@ class QKVAttention(nn.Cell):
             a = memory_efficient_attention(q, k, v)
             a = a.permute(0, 2, 1)
         else:
+            assert q.dtype == k.dtype == v.dtype
+            ori_dtype = q.dtype  # BatchMatMul has to run in fp16 mode on ascend!
+            q, k, v = q.to(ms.float16), k.to(ms.float16), v.to(ms.float16)
             weight = ops.BatchMatMul(transpose_a=True)(  # 'bct,bcs->bts'
                 q * scale, k * scale
             )  # More stable with f16 than dividing afterwards
             weight = ops.softmax(weight.float(), axis=-1).to(weight.dtype)
             a = ops.BatchMatMul(transpose_b=True)(v, weight)  # 'bcs,bts->bct'
+            a = a.to(ori_dtype)
         return a.reshape(bs, -1, length)
 
 
