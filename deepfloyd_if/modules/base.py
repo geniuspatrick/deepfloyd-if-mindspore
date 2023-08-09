@@ -178,10 +178,9 @@ class IFBaseModule:
             assert support_noise_less_qsample_steps < len(diffusion.timestep_map) - 1
             assert support_noise.shape == (1, 3, image_h, image_w)
             q_sample_steps = ms.Tensor([int(len(diffusion.timestep_map) - 1 - support_noise_less_qsample_steps)])
-            support_noise = support_noise.cpu()
             noise = support_noise.copy()
-            noise[inpainting_mask.cpu().bool() if inpainting_mask is not None else ...] = diffusion.q_sample(
-                support_noise[inpainting_mask.cpu().bool() if inpainting_mask is not None else ...],
+            noise[inpainting_mask.bool() if inpainting_mask is not None else ...] = diffusion.q_sample(
+                support_noise[inpainting_mask.bool() if inpainting_mask is not None else ...],
                 q_sample_steps,
             )
             noise = noise.tile((batch_size*bs_scale, 1, 1, 1)).to(dtype=self.model.dtype)
@@ -313,7 +312,7 @@ class IFBaseModule:
             pil_images.append(pil_img)
         return pil_images
 
-    def show(self, pil_images, nrow=None, size=10):
+    def show(self, pil_images, nrow=None, size=10, filename="res.jpg"):
         if nrow is None:
             nrow = round(len(pil_images)**0.5)
 
@@ -329,6 +328,7 @@ class IFBaseModule:
             return grid
 
         imgs = make_grid(pil_images, nrow, len(pil_images) // nrow)
+        imgs.save(filename)
         if not isinstance(imgs, list):
             imgs = [imgs]
 
@@ -337,7 +337,6 @@ class IFBaseModule:
             axs[0, i].imshow(np.asarray(img))
             axs[0, i].set(xticklabels=[], yticklabels=[], xticks=[], yticks=[])
 
-        plt.savefig("res.jpg")
         fix.show()
         plt.show()
 

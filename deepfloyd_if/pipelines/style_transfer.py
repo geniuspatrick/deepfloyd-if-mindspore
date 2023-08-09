@@ -75,7 +75,7 @@ def style_transfer(
 
     if if_II is not None:
         if stageI_generations is None:
-            stageI_generations = low_res.repeat(bs, 1, 1, 1)
+            stageI_generations = low_res.tile((bs, 1, 1, 1))
 
         if_II_kwargs = if_II_kwargs or {}
         if_II_kwargs['low_res'] = stageI_generations

@@ -700,7 +700,7 @@ class SuperResUNetModel(UNetModel):
             aug_steps = (np.random.random(bs)*1000).astype(np.int64)  # uniform [0, 1)
             aug_steps = ms.Tensor(aug_steps).to(dtype=ms.int64)
         else:
-            aug_steps = ms.Tensor([int(aug_level * 1000)]).repeat(bs).to(dtype=ms.int64)
+            aug_steps = ms.Tensor([int(aug_level * 1000)]).tile((bs,)).to(dtype=ms.int64)
 
         upsampled = self.low_res_diffusion.q_sample(upsampled, aug_steps)
         x = ops.cat([x, upsampled], axis=1)

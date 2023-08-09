@@ -49,7 +49,7 @@ def super_resolution(
     if if_III.use_diffusers:
         if_III_kwargs['prompt'] = prompt
 
-    if_III_kwargs['low_res'] = low_res.repeat(bs, 1, 1, 1)
+    if_III_kwargs['low_res'] = low_res.tile((bs, 1, 1, 1))
     if_III_kwargs['seed'] = seed
     if_III_kwargs['t5_embs'] = t5_embs
     if_III_kwargs['negative_t5_embs'] = negative_t5_embs

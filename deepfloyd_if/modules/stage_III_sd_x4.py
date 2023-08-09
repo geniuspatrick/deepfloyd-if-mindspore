@@ -57,7 +57,7 @@ class StableStageIII(IFBaseModule):
 
         generator = torch.manual_seed(seed)
         prompt = sum([batch_repeat * [p] for p in prompt], [])
-        low_res = low_res.repeat(batch_repeat, 1, 1, 1)
+        low_res = low_res.tile((batch_repeat, 1, 1, 1))
 
         metadata = {
             'image': low_res,
